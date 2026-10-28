@@ -1,0 +1,28 @@
+/**
+ * WebSentinel-CS :: Configuration Module
+ * Single Source of Truth for environment and application settings
+ */
+
+const path = require('node:path');
+
+const env = process.env;
+
+const config = {
+  VERSION: '1.3.0',
+  ENV: env.NODE_ENV || 'production',
+  HOST: env.HOST || '127.0.0.1',
+  PORT: parseInt(env.PORT || '4000', 10),
+  DB_PATH: env.DB_PATH || path.join(__dirname, '..', 'data', 'sentinel.sqlite'),
+  DEMO_MODE: env.DEMO_MODE === 'true',
+  CORS_ORIGINS: env.CORS_ORIGINS
+    ? env.CORS_ORIGINS.split(',').map(s => s.trim())
+    : ['http://127.0.0.1:4000', 'http://localhost:4000'],
+  SCAN_ALLOWLIST: env.SCAN_ALLOWLIST
+    ? env.SCAN_ALLOWLIST.split(',').map(s => s.trim())
+    : ['127.0.0.1', 'localhost', '172.16.0.0/16'],
+  RETENTION_DAYS: parseInt(env.RETENTION_DAYS || '90', 10),
+  LOG_LEVEL: env.LOG_LEVEL || 'info',
+  MAX_BODY_BYTES: parseInt(env.MAX_BODY_BYTES || '1048576', 10) // 1 MB
+};
+
+module.exports = config;
