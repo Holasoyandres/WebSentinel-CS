@@ -1,0 +1,21 @@
+{
+  "name": "websentinel-cs",
+  "version": "1.0.0",
+  "description": "Autonomous Web Security, Fraud & Anomaly Detection Sentinel for Web Applications",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "cybersecurity",
+    "web-security",
+    "threat-detection",
+    "anomaly-detection",
+    "rate-limiting",
+    "owasp",
+    "soc",
+    "honeypot"
+  ],
+  "author": "Holasoyandres",
+  "license": "MIT"
+}
