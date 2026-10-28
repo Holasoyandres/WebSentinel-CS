@@ -5,22 +5,30 @@
 
 let activeFilter = 'ALL';
 let telemetryEvents = [];
+let currentSelectedSessionId = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   initClock();
   fetchSystemStats();
   fetchSecurityFeed();
+  fetchSessionsFeed();
 
   setInterval(fetchSystemStats, 3000);
   setInterval(fetchSecurityFeed, 3000);
   setInterval(fetchSessionsFeed, 5000);
-  fetchSessionsFeed();
 
   // Wire event handlers
-  document.getElementById('btnScanUrl').addEventListener('click', executeUrlAudit);
-  document.getElementById('btnInspectPayload').addEventListener('click', executePayloadInspection);
-  document.getElementById('btnRunSql').addEventListener('click', executeSqlQuery);
-  document.getElementById('btnExportCsv').addEventListener('click', () => {
+  const btnScan = document.getElementById('btnScanUrl');
+  if (btnScan) btnScan.addEventListener('click', executeUrlAudit);
+
+  const btnInspect = document.getElementById('btnInspectPayload');
+  if (btnInspect) btnInspect.addEventListener('click', executePayloadInspection);
+
+  const btnSql = document.getElementById('btnRunSql');
+  if (btnSql) btnSql.addEventListener('click', executeSqlQuery);
+
+  const btnExport = document.getElementById('btnExportCsv');
+  if (btnExport) btnExport.addEventListener('click', () => {
     window.location.href = '/api/export-csv';
   });
 });
@@ -44,16 +52,24 @@ async function fetchSystemStats() {
     if (!res.ok) return;
     const data = await res.json();
 
-    document.getElementById('kpiThreats').textContent = data.threatsDetected.toLocaleString();
-    document.getElementById('kpiBruteForce').textContent = data.bruteForceBlocked.toLocaleString();
-    document.getElementById('kpiScans').textContent = data.totalScans.toLocaleString();
-    document.getElementById('kpiInspections').textContent = data.inspectionsRun.toLocaleString();
+    const elThreats = document.getElementById('kpiThreats');
+    if (elThreats) elThreats.textContent = (data.threatsDetected || 0).toLocaleString();
 
-    const sec = data.uptimeSeconds;
+    const elBrute = document.getElementById('kpiBruteForce');
+    if (elBrute) elBrute.textContent = (data.bruteForceBlocked || 0).toLocaleString();
+
+    const elScans = document.getElementById('kpiScans');
+    if (elScans) elScans.textContent = (data.totalScans || 0).toLocaleString();
+
+    const elInspect = document.getElementById('kpiInspections');
+    if (elInspect) elInspect.textContent = (data.inspectionsRun || 0).toLocaleString();
+
+    const sec = data.uptimeSeconds || 0;
     const hrs = Math.floor(sec / 3600);
     const mins = Math.floor((sec % 3600) / 60);
     const s = sec % 60;
-    document.getElementById('uptimeText').textContent = `${hrs}h ${mins}m ${s}s`;
+    const elUptime = document.getElementById('uptimeText');
+    if (elUptime) elUptime.textContent = `${hrs}h ${mins}m ${s}s`;
   } catch (err) {
     console.error('Stats poll error:', err);
   }
@@ -75,6 +91,7 @@ async function fetchSecurityFeed() {
 function renderSocTable() {
   const tbody = document.getElementById('socTableBody');
   const countLabel = document.getElementById('eventsCountLabel');
+  if (!tbody || !countLabel) return;
 
   const filtered = activeFilter === 'ALL'
     ? telemetryEvents
@@ -103,8 +120,8 @@ function renderSocTable() {
         <td>
           <span class="badge-sev badge-sev-${ev.severity}">${ev.severity}</span>
         </td>
-        <td style="color: var(--text-secondary);">${escapeHtml(ev.ruleId || 'N/A')}</td>
-        <td style="color: var(--color-info);">${escapeHtml(ev.sourceIp)}</td>
+        <td style="color: var(--text-secondary);">${escapeHtml(ev.ruleId || ev.rule_id || 'N/A')}</td>
+        <td style="color: var(--color-info);">${escapeHtml(ev.sourceIp || ev.source_ip)}</td>
         <td style="color: var(--text-primary);">${escapeHtml(ev.target)}</td>
         <td class="col-desc">${escapeHtml(ev.details)}</td>
         <td>
@@ -227,159 +244,6 @@ async function executePayloadInspection() {
   }
 }
 
-// ==========================================
-// VIEW SWITCHER (SUBPÁGINAS)
-// ==========================================
-function switchView(viewName) {
-  const socTab = document.getElementById('tabSoc');
-  const sessionsTab = document.getElementById('tabSessions');
-  const socView = document.getElementById('view-soc');
-  const sessionsView = document.getElementById('view-sessions');
-
-  if (viewName === 'soc') {
-    socTab.classList.add('active');
-    sessionsTab.classList.remove('active');
-    socView.classList.remove('hidden');
-    sessionsView.classList.add('hidden');
-  } else if (viewName === 'sessions') {
-    sessionsTab.classList.add('active');
-    socTab.classList.remove('active');
-    sessionsView.classList.remove('hidden');
-    socView.classList.add('hidden');
-    fetchSessionsFeed();
-  }
-}
-
-// ==========================================
-// USER SESSIONS & ACTIVITY AUDIT
-// ==========================================
-let currentSelectedSessionId = null;
-
-async function fetchSessionsFeed() {
-  try {
-    const res = await fetch('/api/sessions');
-    if (!res.ok) return;
-    const sessions = await res.json();
-    renderSessionsTable(sessions);
-  } catch (err) {
-    console.error('Sessions poll error:', err);
-  }
-}
-
-function renderSessionsTable(sessions) {
-  const tbody = document.getElementById('sessionsTableBody');
-  const countLabel = document.getElementById('sessionsFooterCount');
-
-  const activeCount = sessions.filter(s => s.status === 'ACTIVA').length;
-  let totalActs = 0;
-  sessions.forEach(s => totalActs += (s.total_activities || 0));
-
-  document.getElementById('kpiActiveSessions').textContent = activeCount;
-  document.getElementById('kpiTotalSessions').textContent = sessions.length;
-  document.getElementById('kpiTotalActivities').textContent = totalActs;
-  countLabel.textContent = `Registradas ${sessions.length} sesiones en base de datos SQLite (${activeCount} activas actualmente)`;
-
-  if (sessions.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 30px; color: var(--text-muted);">Sin sesiones registradas.</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = sessions.map(s => {
-    const isSelected = s.session_id === currentSelectedSessionId ? 'row-selected' : '';
-    const loginDate = new Date(s.login_time);
-    const loginFormatted = loginDate.toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
-    
-    let logoutFormatted = '<span style="color: var(--color-success); font-weight: 600;">En curso</span>';
-    if (s.logout_time) {
-      const logoutDate = new Date(s.logout_time);
-      logoutFormatted = logoutDate.toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
-    }
-
-    const durationText = s.duration_minutes > 0 ? `${s.duration_minutes} min` : '< 1 min';
-
-    return `
-      <tr class="${isSelected}">
-        <td>
-          <span class="badge-status badge-status-${s.status}">${s.status}</span>
-        </td>
-        <td>
-          <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(s.user_identifier)}</div>
-          <div style="font-size: 9px; color: var(--text-muted);">${escapeHtml(s.role)}</div>
-        </td>
-        <td style="color: var(--color-info);">${escapeHtml(s.ip_address)}</td>
-        <td>
-          <span style="font-family: var(--font-mono); color: var(--text-secondary); background: var(--bg-control); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border-subtle);">
-            ${escapeHtml(s.login_portal)}
-          </span>
-        </td>
-        <td style="color: var(--text-muted); font-size: 10px;">${loginFormatted}</td>
-        <td style="font-size: 10px;">${logoutFormatted}</td>
-        <td style="color: var(--text-secondary); font-weight: 600;">${durationText}</td>
-        <td>
-          <button class="btn btn-outline btn-sm" onclick="loadSessionActivities('${s.session_id}', '${escapeHtml(s.user_identifier)}', '${escapeHtml(s.ip_address)}', '${escapeHtml(s.login_portal)}')">
-            Ver Trazabilidad (${s.total_activities || 0})
-          </button>
-        </td>
-      </tr>
-    `;
-  }).join('');
-}
-
-// Load Activity Trail for a given session
-async function loadSessionActivities(sessionId, userIdentifier, ip, portal) {
-  currentSelectedSessionId = sessionId;
-  document.getElementById('selectedSessionChip').textContent = sessionId;
-  document.getElementById('selectedSessionSub').textContent = `${userIdentifier} &bull; IP: ${ip} &bull; Portal: ${portal}`;
-
-  const container = document.getElementById('activityTimelineContainer');
-  container.innerHTML = `<div style="text-align: center; padding: 20px; color: var(--text-muted);">Cargando trazabilidad de actividades...</div>`;
-
-  try {
-    const res = await fetch(`/api/sessions/activities?sessionId=${encodeURIComponent(sessionId)}`);
-    if (!res.ok) return;
-    const activities = await res.json();
-
-    if (activities.length === 0) {
-      container.innerHTML = `<div style="text-align: center; padding: 30px; color: var(--text-muted);">Sin acciones registradas para esta sesión.</div>`;
-      return;
-    }
-
-    container.innerHTML = activities.map(act => {
-      const time = new Date(act.timestamp).toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
-      return `
-        <div class="timeline-step risk-${act.risk_level || 'NORMAL'}">
-          <div class="timeline-header">
-            <span class="timeline-action">${escapeHtml(act.action_type)}</span>
-            <span class="timeline-time">${time}</span>
-          </div>
-          <div class="timeline-endpoint">${escapeHtml(act.endpoint)}</div>
-          <div class="timeline-desc">${escapeHtml(act.description)}</div>
-        </div>
-      `;
-    }).join('');
-
-    // Re-render table to update selection highlight
-    fetchSessionsFeed();
-  } catch (err) {
-    container.innerHTML = `<div style="color: var(--color-critical); padding: 20px;">Error al cargar actividades: ${err.message}</div>`;
-  }
-}
-
-// Simulate a brand new user session with live activity
-async function simulateNewUserSession() {
-  try {
-    const res = await fetch('/api/sessions/simulate', { method: 'POST' });
-    const data = await res.json();
-    if (data.success) {
-      await fetchSessionsFeed();
-      loadSessionActivities(data.sessionId, data.user, '172.16.0.88', '/tramites-suit');
-    }
-  } catch (err) {
-    alert('Error al simular sesión: ' + err.message);
-  }
-}
-
-
 // Attack Simulation Benchmarks
 async function runAttackSim(vector) {
   try {
@@ -452,11 +316,9 @@ async function executeSqlQuery() {
       return;
     }
 
-    // Render columns
     const columns = Object.keys(data.rows[0]);
     thead.innerHTML = `<tr>${columns.map(c => `<th>${escapeHtml(c.toUpperCase())}</th>`).join('')}</tr>`;
 
-    // Render rows
     tbody.innerHTML = data.rows.map(r => `
       <tr>${columns.map(c => `<td>${escapeHtml(String(r[c]))}</td>`).join('')}</tr>
     `).join('');
@@ -495,8 +357,6 @@ function switchView(viewName) {
 // ==========================================
 // USER SESSIONS & ACTIVITY AUDIT
 // ==========================================
-let currentSelectedSessionId = null;
-
 async function fetchSessionsFeed() {
   try {
     const res = await fetch('/api/sessions');
@@ -511,14 +371,21 @@ async function fetchSessionsFeed() {
 function renderSessionsTable(sessions) {
   const tbody = document.getElementById('sessionsTableBody');
   const countLabel = document.getElementById('sessionsFooterCount');
+  if (!tbody || !countLabel) return;
 
   const activeCount = sessions.filter(s => s.status === 'ACTIVA').length;
   let totalActs = 0;
   sessions.forEach(s => totalActs += (s.total_activities || 0));
 
-  document.getElementById('kpiActiveSessions').textContent = activeCount;
-  document.getElementById('kpiTotalSessions').textContent = sessions.length;
-  document.getElementById('kpiTotalActivities').textContent = totalActs;
+  const elActive = document.getElementById('kpiActiveSessions');
+  if (elActive) elActive.textContent = activeCount;
+
+  const elTotal = document.getElementById('kpiTotalSessions');
+  if (elTotal) elTotal.textContent = sessions.length;
+
+  const elActs = document.getElementById('kpiTotalActivities');
+  if (elActs) elActs.textContent = totalActs;
+
   countLabel.textContent = `Registradas ${sessions.length} sesiones en base de datos SQLite (${activeCount} activas actualmente)`;
 
   if (sessions.length === 0) {
@@ -570,10 +437,15 @@ function renderSessionsTable(sessions) {
 // Load Activity Trail for a given session
 async function loadSessionActivities(sessionId, userIdentifier, ip, portal) {
   currentSelectedSessionId = sessionId;
-  document.getElementById('selectedSessionChip').textContent = sessionId;
-  document.getElementById('selectedSessionSub').textContent = `${userIdentifier} &bull; IP: ${ip} &bull; Portal: ${portal}`;
+  const chip = document.getElementById('selectedSessionChip');
+  if (chip) chip.textContent = sessionId;
+
+  const sub = document.getElementById('selectedSessionSub');
+  if (sub) sub.textContent = `${userIdentifier} • IP: ${ip} • Portal: ${portal}`;
 
   const container = document.getElementById('activityTimelineContainer');
+  if (!container) return;
+
   container.innerHTML = `<div style="text-align: center; padding: 20px; color: var(--text-muted);">Cargando trazabilidad de actividades...</div>`;
 
   try {
@@ -600,7 +472,6 @@ async function loadSessionActivities(sessionId, userIdentifier, ip, portal) {
       `;
     }).join('');
 
-    // Re-render table to update selection highlight
     fetchSessionsFeed();
   } catch (err) {
     container.innerHTML = `<div style="color: var(--color-critical); padding: 20px;">Error al cargar actividades: ${err.message}</div>`;
@@ -620,5 +491,3 @@ async function simulateNewUserSession() {
     alert('Error al simular sesión: ' + err.message);
   }
 }
-
-
