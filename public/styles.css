@@ -686,4 +686,189 @@ body.theme-enterprise {
   opacity: 0.3;
 }
 
+/* View Navigation Tabs */
+.view-navigation {
+  display: flex;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0 24px;
+  gap: 8px;
+}
+
+.view-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 10px 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s;
+}
+
+.view-tab:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.view-tab.active {
+  color: var(--color-info);
+  border-bottom-color: var(--color-info);
+  background: rgba(56, 189, 248, 0.05);
+}
+
+.view-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+/* Sessions Master-Detail Layout */
+.sessions-layout-container {
+  display: grid;
+  grid-template-columns: 1fr 440px;
+  flex: 1;
+  background: var(--bg-app);
+  padding: 16px;
+  gap: 16px;
+}
+
+@media (max-width: 1200px) {
+  .sessions-layout-container {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sessions-master-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.sessions-detail-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Session Status Badges */
+.badge-status {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.badge-status-ACTIVA {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+  border: 1px solid var(--color-success-border);
+}
+
+.badge-status-CERRADA {
+  background: var(--bg-control);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+.table-soc tbody tr.row-selected {
+  background-color: rgba(56, 189, 248, 0.08) !important;
+  border-left: 2px solid var(--color-info);
+}
+
+/* Activity Timeline */
+.activity-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+  padding-left: 14px;
+}
+
+.activity-timeline::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 4px;
+  width: 2px;
+  background: var(--border-subtle);
+}
+
+.timeline-step {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--bg-control);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+
+.timeline-step::before {
+  content: '';
+  position: absolute;
+  left: -15px;
+  top: 14px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-info);
+  border: 2px solid var(--bg-app);
+}
+
+.timeline-step.risk-CRITICAL::before {
+  background: var(--color-critical);
+}
+
+.timeline-step.risk-ELEVATED::before {
+  background: var(--color-high);
+}
+
+.timeline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.timeline-time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.timeline-action {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.timeline-endpoint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-info);
+}
+
+.timeline-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.empty-state-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-muted);
+}
+
 .hidden { display: none !important; }

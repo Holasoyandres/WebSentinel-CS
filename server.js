@@ -413,6 +413,123 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // --- Session & User Activity Audit Routes ---
+
+  // GET /api/sessions
+  if (req.method === 'GET' && pathname === '/api/sessions') {
+    const limit = parseInt(parsed.query.limit || '50', 10);
+    const sessions = storage.getUserSessions(limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(sessions));
+  }
+
+  // GET /api/sessions/activities?sessionId=...
+  if (req.method === 'GET' && pathname === '/api/sessions/activities') {
+    const sessionId = parsed.query.sessionId;
+    if (!sessionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'sessionId requerido' }));
+    }
+    const activities = storage.getSessionActivities(sessionId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(activities));
+  }
+
+  // POST /api/sessions/login
+  if (req.method === 'POST' && pathname === '/api/sessions/login') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        const sessId = storage.createSession({
+          user_identifier: data.user || 'usuario.anonimo',
+          role: data.role || 'USUARIO',
+          ip_address: data.ip || req.socket.remoteAddress || '127.0.0.1',
+          login_portal: data.portal || '/auth/login',
+          user_agent: req.headers['user-agent'] || 'WebClient'
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, sessionId: sessId }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/sessions/activity
+  if (req.method === 'POST' && pathname === '/api/sessions/activity') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        storage.recordActivity(
+          data.sessionId,
+          data.actionType || 'GENERIC_ACTION',
+          data.endpoint || '/api',
+          data.description || 'Acción ejecutada',
+          data.riskLevel || 'NORMAL'
+        );
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/sessions/logout
+  if (req.method === 'POST' && pathname === '/api/sessions/logout') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        const ok = storage.closeSession(data.sessionId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: ok }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/sessions/simulate
+  if (req.method === 'POST' && pathname === '/api/sessions/simulate') {
+    const roles = ['ANALISTA_PQRD', 'FUNCIONARIO_RADICACION', 'SUPERVISOR_TECNICO', 'AUDITOR_CONTROL_INTERNO'];
+    const users = ['andres.desarrollador', 'diana.garcia@eaav.local', 'camilo.torres@acueducto.gov', 'paola.sanchez'];
+    const portals = ['/tramites-suit/index.html', '/portal/formulario-pqr', '/admin/denuncias/admin.html', '/api/pagos.php'];
+    const ips = ['172.16.0.88', '172.16.0.142', '190.157.8.24', '186.84.90.12'];
+
+    const chosenRole = roles[Math.floor(Math.random() * roles.length)];
+    const chosenUser = users[Math.floor(Math.random() * users.length)];
+    const chosenPortal = portals[Math.floor(Math.random() * portals.length)];
+    const chosenIp = ips[Math.floor(Math.random() * ips.length)];
+
+    const sessId = storage.createSession({
+      user_identifier: chosenUser,
+      role: chosenRole,
+      ip_address: chosenIp,
+      login_portal: chosenPortal,
+      user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Edge/127.0.0.0'
+    });
+
+    // Add 2 simulated actions
+    storage.recordActivity(sessId, 'CONSULTA_EXPEDIENTE', chosenPortal, `Consultó historial del ciudadano con radicado #${Math.floor(Math.random() * 80000) + 10000}.`, 'NORMAL');
+    storage.recordActivity(sessId, 'ACTUALIZACION_DATOS', '/api/tramites/save', 'Actualizó información de contacto y validó documentación adjunta.', 'NORMAL');
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, sessionId: sessId, user: chosenUser }));
+    return;
+  }
+
   // Static Assets Dispatcher
   let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
   const ext = path.extname(filePath);

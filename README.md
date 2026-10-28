@@ -73,6 +73,13 @@
 * Tabulación forense de eventos con identificadores únicos (`SEC-XXXX`), sello temporal UTC, IP origen, endpoint objetivo y acción ejecutada.
 * Exportación estructurada a formato **CSV** para ingesta en sistemas SIEM perimetrales.
 
+### 5. Auditoría de Sesiones & Trazabilidad de Usuario (User Journey Forensics)
+* **Control de Identidades y Accesos:** Registro detallado de inicios de sesión con:
+  * Dirección IP de origen y Agente de Usuario.
+  * Lugar exacto de acceso dentro de la plataforma (ej. `/admin`, `/tramites-suit`, `/denuncias`).
+  * Hora exacta de inicio (`login_time`), hora de salida (`logout_time`) y tiempo total de permanencia.
+* **Línea de Tiempo de Acciones (Qué Hizo el Usuario):** Desglose cronológico de cada operación ejecutada (consultas de expedientes, cambios de estado, descargas de reportes o alertas de seguridad elevadas).
+
 ---
 
 ## ⚡ Especificaciones Técnicas y Rendimiento

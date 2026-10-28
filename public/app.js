@@ -13,6 +13,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   setInterval(fetchSystemStats, 3000);
   setInterval(fetchSecurityFeed, 3000);
+  setInterval(fetchSessionsFeed, 5000);
+  fetchSessionsFeed();
 
   // Wire event handlers
   document.getElementById('btnScanUrl').addEventListener('click', executeUrlAudit);
@@ -225,6 +227,159 @@ async function executePayloadInspection() {
   }
 }
 
+// ==========================================
+// VIEW SWITCHER (SUBPÁGINAS)
+// ==========================================
+function switchView(viewName) {
+  const socTab = document.getElementById('tabSoc');
+  const sessionsTab = document.getElementById('tabSessions');
+  const socView = document.getElementById('view-soc');
+  const sessionsView = document.getElementById('view-sessions');
+
+  if (viewName === 'soc') {
+    socTab.classList.add('active');
+    sessionsTab.classList.remove('active');
+    socView.classList.remove('hidden');
+    sessionsView.classList.add('hidden');
+  } else if (viewName === 'sessions') {
+    sessionsTab.classList.add('active');
+    socTab.classList.remove('active');
+    sessionsView.classList.remove('hidden');
+    socView.classList.add('hidden');
+    fetchSessionsFeed();
+  }
+}
+
+// ==========================================
+// USER SESSIONS & ACTIVITY AUDIT
+// ==========================================
+let currentSelectedSessionId = null;
+
+async function fetchSessionsFeed() {
+  try {
+    const res = await fetch('/api/sessions');
+    if (!res.ok) return;
+    const sessions = await res.json();
+    renderSessionsTable(sessions);
+  } catch (err) {
+    console.error('Sessions poll error:', err);
+  }
+}
+
+function renderSessionsTable(sessions) {
+  const tbody = document.getElementById('sessionsTableBody');
+  const countLabel = document.getElementById('sessionsFooterCount');
+
+  const activeCount = sessions.filter(s => s.status === 'ACTIVA').length;
+  let totalActs = 0;
+  sessions.forEach(s => totalActs += (s.total_activities || 0));
+
+  document.getElementById('kpiActiveSessions').textContent = activeCount;
+  document.getElementById('kpiTotalSessions').textContent = sessions.length;
+  document.getElementById('kpiTotalActivities').textContent = totalActs;
+  countLabel.textContent = `Registradas ${sessions.length} sesiones en base de datos SQLite (${activeCount} activas actualmente)`;
+
+  if (sessions.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 30px; color: var(--text-muted);">Sin sesiones registradas.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = sessions.map(s => {
+    const isSelected = s.session_id === currentSelectedSessionId ? 'row-selected' : '';
+    const loginDate = new Date(s.login_time);
+    const loginFormatted = loginDate.toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
+    
+    let logoutFormatted = '<span style="color: var(--color-success); font-weight: 600;">En curso</span>';
+    if (s.logout_time) {
+      const logoutDate = new Date(s.logout_time);
+      logoutFormatted = logoutDate.toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
+    }
+
+    const durationText = s.duration_minutes > 0 ? `${s.duration_minutes} min` : '< 1 min';
+
+    return `
+      <tr class="${isSelected}">
+        <td>
+          <span class="badge-status badge-status-${s.status}">${s.status}</span>
+        </td>
+        <td>
+          <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(s.user_identifier)}</div>
+          <div style="font-size: 9px; color: var(--text-muted);">${escapeHtml(s.role)}</div>
+        </td>
+        <td style="color: var(--color-info);">${escapeHtml(s.ip_address)}</td>
+        <td>
+          <span style="font-family: var(--font-mono); color: var(--text-secondary); background: var(--bg-control); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border-subtle);">
+            ${escapeHtml(s.login_portal)}
+          </span>
+        </td>
+        <td style="color: var(--text-muted); font-size: 10px;">${loginFormatted}</td>
+        <td style="font-size: 10px;">${logoutFormatted}</td>
+        <td style="color: var(--text-secondary); font-weight: 600;">${durationText}</td>
+        <td>
+          <button class="btn btn-outline btn-sm" onclick="loadSessionActivities('${s.session_id}', '${escapeHtml(s.user_identifier)}', '${escapeHtml(s.ip_address)}', '${escapeHtml(s.login_portal)}')">
+            Ver Trazabilidad (${s.total_activities || 0})
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// Load Activity Trail for a given session
+async function loadSessionActivities(sessionId, userIdentifier, ip, portal) {
+  currentSelectedSessionId = sessionId;
+  document.getElementById('selectedSessionChip').textContent = sessionId;
+  document.getElementById('selectedSessionSub').textContent = `${userIdentifier} &bull; IP: ${ip} &bull; Portal: ${portal}`;
+
+  const container = document.getElementById('activityTimelineContainer');
+  container.innerHTML = `<div style="text-align: center; padding: 20px; color: var(--text-muted);">Cargando trazabilidad de actividades...</div>`;
+
+  try {
+    const res = await fetch(`/api/sessions/activities?sessionId=${encodeURIComponent(sessionId)}`);
+    if (!res.ok) return;
+    const activities = await res.json();
+
+    if (activities.length === 0) {
+      container.innerHTML = `<div style="text-align: center; padding: 30px; color: var(--text-muted);">Sin acciones registradas para esta sesión.</div>`;
+      return;
+    }
+
+    container.innerHTML = activities.map(act => {
+      const time = new Date(act.timestamp).toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
+      return `
+        <div class="timeline-step risk-${act.risk_level || 'NORMAL'}">
+          <div class="timeline-header">
+            <span class="timeline-action">${escapeHtml(act.action_type)}</span>
+            <span class="timeline-time">${time}</span>
+          </div>
+          <div class="timeline-endpoint">${escapeHtml(act.endpoint)}</div>
+          <div class="timeline-desc">${escapeHtml(act.description)}</div>
+        </div>
+      `;
+    }).join('');
+
+    // Re-render table to update selection highlight
+    fetchSessionsFeed();
+  } catch (err) {
+    container.innerHTML = `<div style="color: var(--color-critical); padding: 20px;">Error al cargar actividades: ${err.message}</div>`;
+  }
+}
+
+// Simulate a brand new user session with live activity
+async function simulateNewUserSession() {
+  try {
+    const res = await fetch('/api/sessions/simulate', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      await fetchSessionsFeed();
+      loadSessionActivities(data.sessionId, data.user, '172.16.0.88', '/tramites-suit');
+    }
+  } catch (err) {
+    alert('Error al simular sesión: ' + err.message);
+  }
+}
+
+
 // Attack Simulation Benchmarks
 async function runAttackSim(vector) {
   try {
@@ -313,4 +468,157 @@ async function executeSqlQuery() {
     btn.disabled = false;
   }
 }
+
+// ==========================================
+// VIEW SWITCHER (SUBPÁGINAS)
+// ==========================================
+function switchView(viewName) {
+  const socTab = document.getElementById('tabSoc');
+  const sessionsTab = document.getElementById('tabSessions');
+  const socView = document.getElementById('view-soc');
+  const sessionsView = document.getElementById('view-sessions');
+
+  if (viewName === 'soc') {
+    socTab.classList.add('active');
+    sessionsTab.classList.remove('active');
+    socView.classList.remove('hidden');
+    sessionsView.classList.add('hidden');
+  } else if (viewName === 'sessions') {
+    sessionsTab.classList.add('active');
+    socTab.classList.remove('active');
+    sessionsView.classList.remove('hidden');
+    socView.classList.add('hidden');
+    fetchSessionsFeed();
+  }
+}
+
+// ==========================================
+// USER SESSIONS & ACTIVITY AUDIT
+// ==========================================
+let currentSelectedSessionId = null;
+
+async function fetchSessionsFeed() {
+  try {
+    const res = await fetch('/api/sessions');
+    if (!res.ok) return;
+    const sessions = await res.json();
+    renderSessionsTable(sessions);
+  } catch (err) {
+    console.error('Sessions poll error:', err);
+  }
+}
+
+function renderSessionsTable(sessions) {
+  const tbody = document.getElementById('sessionsTableBody');
+  const countLabel = document.getElementById('sessionsFooterCount');
+
+  const activeCount = sessions.filter(s => s.status === 'ACTIVA').length;
+  let totalActs = 0;
+  sessions.forEach(s => totalActs += (s.total_activities || 0));
+
+  document.getElementById('kpiActiveSessions').textContent = activeCount;
+  document.getElementById('kpiTotalSessions').textContent = sessions.length;
+  document.getElementById('kpiTotalActivities').textContent = totalActs;
+  countLabel.textContent = `Registradas ${sessions.length} sesiones en base de datos SQLite (${activeCount} activas actualmente)`;
+
+  if (sessions.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 30px; color: var(--text-muted);">Sin sesiones registradas.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = sessions.map(s => {
+    const isSelected = s.session_id === currentSelectedSessionId ? 'row-selected' : '';
+    const loginDate = new Date(s.login_time);
+    const loginFormatted = loginDate.toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
+    
+    let logoutFormatted = '<span style="color: var(--color-success); font-weight: 600;">En curso</span>';
+    if (s.logout_time) {
+      const logoutDate = new Date(s.logout_time);
+      logoutFormatted = logoutDate.toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
+    }
+
+    const durationText = s.duration_minutes > 0 ? `${s.duration_minutes} min` : '< 1 min';
+
+    return `
+      <tr class="${isSelected}">
+        <td>
+          <span class="badge-status badge-status-${s.status}">${s.status}</span>
+        </td>
+        <td>
+          <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(s.user_identifier)}</div>
+          <div style="font-size: 9px; color: var(--text-muted);">${escapeHtml(s.role)}</div>
+        </td>
+        <td style="color: var(--color-info);">${escapeHtml(s.ip_address)}</td>
+        <td>
+          <span style="font-family: var(--font-mono); color: var(--text-secondary); background: var(--bg-control); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border-subtle);">
+            ${escapeHtml(s.login_portal)}
+          </span>
+        </td>
+        <td style="color: var(--text-muted); font-size: 10px;">${loginFormatted}</td>
+        <td style="font-size: 10px;">${logoutFormatted}</td>
+        <td style="color: var(--text-secondary); font-weight: 600;">${durationText}</td>
+        <td>
+          <button class="btn btn-outline btn-sm" onclick="loadSessionActivities('${s.session_id}', '${escapeHtml(s.user_identifier)}', '${escapeHtml(s.ip_address)}', '${escapeHtml(s.login_portal)}')">
+            Ver Trazabilidad (${s.total_activities || 0})
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// Load Activity Trail for a given session
+async function loadSessionActivities(sessionId, userIdentifier, ip, portal) {
+  currentSelectedSessionId = sessionId;
+  document.getElementById('selectedSessionChip').textContent = sessionId;
+  document.getElementById('selectedSessionSub').textContent = `${userIdentifier} &bull; IP: ${ip} &bull; Portal: ${portal}`;
+
+  const container = document.getElementById('activityTimelineContainer');
+  container.innerHTML = `<div style="text-align: center; padding: 20px; color: var(--text-muted);">Cargando trazabilidad de actividades...</div>`;
+
+  try {
+    const res = await fetch(`/api/sessions/activities?sessionId=${encodeURIComponent(sessionId)}`);
+    if (!res.ok) return;
+    const activities = await res.json();
+
+    if (activities.length === 0) {
+      container.innerHTML = `<div style="text-align: center; padding: 30px; color: var(--text-muted);">Sin acciones registradas para esta sesión.</div>`;
+      return;
+    }
+
+    container.innerHTML = activities.map(act => {
+      const time = new Date(act.timestamp).toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
+      return `
+        <div class="timeline-step risk-${act.risk_level || 'NORMAL'}">
+          <div class="timeline-header">
+            <span class="timeline-action">${escapeHtml(act.action_type)}</span>
+            <span class="timeline-time">${time}</span>
+          </div>
+          <div class="timeline-endpoint">${escapeHtml(act.endpoint)}</div>
+          <div class="timeline-desc">${escapeHtml(act.description)}</div>
+        </div>
+      `;
+    }).join('');
+
+    // Re-render table to update selection highlight
+    fetchSessionsFeed();
+  } catch (err) {
+    container.innerHTML = `<div style="color: var(--color-critical); padding: 20px;">Error al cargar actividades: ${err.message}</div>`;
+  }
+}
+
+// Simulate a brand new user session with live activity
+async function simulateNewUserSession() {
+  try {
+    const res = await fetch('/api/sessions/simulate', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      await fetchSessionsFeed();
+      loadSessionActivities(data.sessionId, data.user, '172.16.0.88', '/tramites-suit');
+    }
+  } catch (err) {
+    alert('Error al simular sesión: ' + err.message);
+  }
+}
+
 
