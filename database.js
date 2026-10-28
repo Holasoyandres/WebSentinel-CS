@@ -79,108 +79,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_activities_session ON session_activities(session_id);
 `);
 
-// Seed Initial Enterprise Sessions if table is empty
-function seedSampleSessionsIfEmpty() {
-  const count = db.prepare(`SELECT count(*) as total FROM user_sessions`).get().total;
-  if (count === 0) {
-    const now = Date.now();
-    const samples = [
-      {
-        session_id: 'SESS-USR-8921',
-        user_identifier: 'carlos.mendoza@eaav.local',
-        role: 'AUDITOR_SISTEMAS',
-        ip_address: '172.16.0.45',
-        login_portal: '/admin/seguridad',
-        user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0.0.0',
-        status: 'ACTIVA',
-        login_time: new Date(now - 45 * 60 * 1000).toISOString(),
-        logout_time: null,
-        duration_minutes: 45,
-        activities: [
-          { action_type: 'AUTH_LOGIN', endpoint: '/admin/login', desc: 'Inicio de sesión exitoso con credenciales corporativas y MFA.', risk: 'NORMAL', timeOffset: 45 },
-          { action_type: 'VIEW_AUDIT_LOGS', endpoint: '/admin/logs', desc: 'Consultó el registro de auditoría de trámites radicados en el mes.', risk: 'NORMAL', timeOffset: 40 },
-          { action_type: 'EXPORT_REPORT', endpoint: '/admin/reports/export?format=xlsx', desc: 'Descargó exportación confidencial de solicitudes ciudadanas.', risk: 'ELEVATED', timeOffset: 25 },
-          { action_type: 'CONFIG_CHECK', endpoint: '/admin/config/firewall', desc: 'Verificó estado de las políticas de firewall perimetral.', risk: 'NORMAL', timeOffset: 10 }
-        ]
-      },
-      {
-        session_id: 'SESS-USR-8919',
-        user_identifier: 'mariana.lopez@atencion.local',
-        role: 'OFICIAL_RADICACION',
-        ip_address: '172.16.0.112',
-        login_portal: '/portal/tramites-suit',
-        user_agent: 'Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0',
-        status: 'CERRADA',
-        login_time: new Date(now - 140 * 60 * 1000).toISOString(),
-        logout_time: new Date(now - 55 * 60 * 1000).toISOString(),
-        duration_minutes: 85,
-        activities: [
-          { action_type: 'AUTH_LOGIN', endpoint: '/portal/login', desc: 'Autenticación en ventanilla única de atención.', risk: 'NORMAL', timeOffset: 140 },
-          { action_type: 'CREATE_RECORD', endpoint: '/api/tramites/radicar', desc: 'Radicó trámite SUIT #48291 (Solicitud de conexión red principal).', risk: 'NORMAL', timeOffset: 120 },
-          { action_type: 'ATTACH_DOCUMENT', endpoint: '/api/tramites/documentos/upload', desc: 'Adjuntó certificado de estratificación catastral (PDF 1.4 MB).', risk: 'NORMAL', timeOffset: 105 },
-          { action_type: 'UPDATE_STATUS', endpoint: '/api/tramites/48291/estado', desc: 'Cambió estado del trámite a "EN_REVISION_TECNICA".', risk: 'NORMAL', timeOffset: 70 },
-          { action_type: 'AUTH_LOGOUT', endpoint: '/portal/logout', desc: 'Cierre voluntario de sesión por fin de turno.', risk: 'NORMAL', timeOffset: 55 }
-        ]
-      },
-      {
-        session_id: 'SESS-USR-8914',
-        user_identifier: 'soporte.externo_contratista',
-        role: 'CONSULTOR_BD',
-        ip_address: '190.85.12.98',
-        login_portal: '/denuncias/admin',
-        user_agent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
-        status: 'CERRADA',
-        login_time: new Date(now - 280 * 60 * 1000).toISOString(),
-        logout_time: new Date(now - 210 * 60 * 1000).toISOString(),
-        duration_minutes: 70,
-        activities: [
-          { action_type: 'AUTH_LOGIN', endpoint: '/denuncias/admin.html', desc: 'Acceso administrativo remoto mediante VPN corporativa.', risk: 'NORMAL', timeOffset: 280 },
-          { action_type: 'QUERY_RECORDS', endpoint: '/api/denuncias/list?limit=50', desc: 'Consultó bandeja de denuncias ciudadanas de corrupción.', risk: 'NORMAL', timeOffset: 260 },
-          { action_type: 'SUSPICIOUS_QUERY', endpoint: '/api/denuncias/export_all.php', desc: 'Intentó ejecutar endpoint no autorizado de volcado masivo. Bloqueado.', risk: 'CRITICAL', timeOffset: 230 },
-          { action_type: 'AUTH_LOGOUT', endpoint: '/admin/logout', desc: 'Sesión terminada tras advertencia de política de seguridad.', risk: 'HIGH', timeOffset: 210 }
-        ]
-      }
-    ];
-
-    const insertSess = db.prepare(`
-      INSERT INTO user_sessions (session_id, user_identifier, role, ip_address, login_portal, user_agent, status, login_time, logout_time, duration_minutes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertAct = db.prepare(`
-      INSERT INTO session_activities (session_id, timestamp, action_type, endpoint, description, risk_level)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-
-    for (const s of samples) {
-      insertSess.run(
-        s.session_id,
-        s.user_identifier,
-        s.role,
-        s.ip_address,
-        s.login_portal,
-        s.user_agent,
-        s.status,
-        s.login_time,
-        s.logout_time,
-        s.duration_minutes
-      );
-
-      for (const a of s.activities) {
-        insertAct.run(
-          s.session_id,
-          new Date(now - a.timeOffset * 60 * 1000).toISOString(),
-          a.action_type,
-          a.endpoint,
-          a.desc,
-          a.risk
-        );
-      }
-    }
-  }
-}
-
-seedSampleSessionsIfEmpty();
+// Clean any mock/seed data to ensure 100% clean state
+db.exec(`
+  DELETE FROM session_activities;
+  DELETE FROM user_sessions;
+`);
 
 module.exports = {
   db,

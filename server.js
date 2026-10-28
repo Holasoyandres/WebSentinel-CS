@@ -503,10 +503,10 @@ const server = http.createServer(async (req, res) => {
 
   // POST /api/sessions/simulate
   if (req.method === 'POST' && pathname === '/api/sessions/simulate') {
-    const roles = ['ANALISTA_PQRD', 'FUNCIONARIO_RADICACION', 'SUPERVISOR_TECNICO', 'AUDITOR_CONTROL_INTERNO'];
-    const users = ['andres.desarrollador', 'diana.garcia@eaav.local', 'camilo.torres@acueducto.gov', 'paola.sanchez'];
-    const portals = ['/tramites-suit/index.html', '/portal/formulario-pqr', '/admin/denuncias/admin.html', '/api/pagos.php'];
-    const ips = ['172.16.0.88', '172.16.0.142', '190.157.8.24', '186.84.90.12'];
+    const roles = ['USUARIO_OPERADOR', 'ADMINISTRADOR_PRUEBAS', 'ANALISTA_DEMO'];
+    const users = ['usuario_demo_01@test.local', 'operador_prueba@test.local', 'admin_demo@test.local'];
+    const portals = ['/portal/login', '/dashboard/panel', '/modulo/formularios'];
+    const ips = ['192.168.1.105', '10.0.0.45', '127.0.0.1'];
 
     const chosenRole = roles[Math.floor(Math.random() * roles.length)];
     const chosenUser = users[Math.floor(Math.random() * users.length)];
@@ -521,9 +521,9 @@ const server = http.createServer(async (req, res) => {
       user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Edge/127.0.0.0'
     });
 
-    // Add 2 simulated actions
-    storage.recordActivity(sessId, 'CONSULTA_EXPEDIENTE', chosenPortal, `Consultó historial del ciudadano con radicado #${Math.floor(Math.random() * 80000) + 10000}.`, 'NORMAL');
-    storage.recordActivity(sessId, 'ACTUALIZACION_DATOS', '/api/tramites/save', 'Actualizó información de contacto y validó documentación adjunta.', 'NORMAL');
+    // Add simulated generic actions
+    storage.recordActivity(sessId, 'CONSULTA_DATOS', chosenPortal, `Consulta de verificación realizada en el sistema.`, 'NORMAL');
+    storage.recordActivity(sessId, 'ACTUALIZACION_REGISTRO', '/api/registros/save', 'Validación de formulario de prueba completada.', 'NORMAL');
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, sessionId: sessId, user: chosenUser }));
