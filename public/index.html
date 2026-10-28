@@ -3,183 +3,222 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebSentinel-CS | Panel de Ciberseguridad & Detección de Anomalías</title>
+  <title>WebSentinel-CS :: Enterprise Security Operations & Telemetry</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
-<body>
-  <div class="app-container">
-    <!-- Top Navigation Bar -->
-    <header class="navbar">
-      <div class="brand">
-        <div class="brand-icon">🛡️</div>
-        <div>
-          <h1 class="brand-title">WebSentinel<span class="highlight">-CS</span></h1>
-          <p class="brand-subtitle">Autonomous Web Security, Fraud & Anomaly Sentinel</p>
+<body class="theme-enterprise">
+  <!-- Top Global Bar -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="app-logo">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="m9 12 2 2 4-4"/>
+        </svg>
+      </div>
+      <div>
+        <div class="app-identity">
+          <span class="app-name">WEBSENTINEL</span>
+          <span class="app-version">v1.2.0-STABLE</span>
         </div>
+        <div class="app-tagline">Security Operations Center & In-Flight Threat Mitigation Engine</div>
       </div>
-      <div class="system-status">
-        <span class="status-indicator pulse"></span>
-        <span class="status-text">CENTINELA ACTIVO</span>
-        <div class="uptime-badge" id="uptimeBadge">Uptime: 0s</div>
-      </div>
-    </header>
+    </div>
 
-    <!-- Top KPI Grid -->
-    <section class="kpi-grid">
-      <div class="kpi-card danger">
-        <div class="kpi-header">
-          <span class="kpi-title">Amenazas Detectadas</span>
-          <span class="kpi-icon">⚡</span>
+    <div class="header-right">
+      <div class="engine-badge">
+        <span class="dot dot-active"></span>
+        <span class="engine-label">MOTOR WAF ACTIVO</span>
+      </div>
+      <div class="clock-display" id="systemClock">00:00:00 UTC</div>
+      <button class="btn btn-sm btn-ghost" id="btnExportCsv" title="Descargar registro de incidentes en formato CSV">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Exportar CSV
+      </button>
+    </div>
+  </header>
+
+  <!-- Metrics Ribbon -->
+  <section class="metrics-ribbon">
+    <div class="metric-cell">
+      <div class="metric-label">Amenazas Neutralizadas</div>
+      <div class="metric-number metric-critical" id="kpiThreats">0</div>
+      <div class="metric-trend">CWE-89 (SQLi) & CWE-79 (XSS)</div>
+    </div>
+    <div class="metric-cell">
+      <div class="metric-label">Ataques Fuerza Bruta</div>
+      <div class="metric-number metric-warning" id="kpiBruteForce">0</div>
+      <div class="metric-trend">IPs en ventana de cooldown</div>
+    </div>
+    <div class="metric-cell">
+      <div class="metric-label">Auditorías de Endpoint</div>
+      <div class="metric-number" id="kpiScans">0</div>
+      <div class="metric-trend">Verificaciones de postura OWASP</div>
+    </div>
+    <div class="metric-cell">
+      <div class="metric-label">Inspecciones Heurísticas</div>
+      <div class="metric-number" id="kpiInspections">0</div>
+      <div class="metric-trend">Firmas de payload evaluadas</div>
+    </div>
+    <div class="metric-cell">
+      <div class="metric-label">Tiempo de Actividad</div>
+      <div class="metric-number metric-mono" id="uptimeText">0s</div>
+      <div class="metric-trend">Estado operacional continuo</div>
+    </div>
+  </section>
+
+  <!-- Main Workstation Layout -->
+  <div class="workstation-container">
+    <!-- Left Panel: Security Assessment & Rule Validation -->
+    <aside class="workstation-sidebar">
+      
+      <!-- Module 1: URL & Header Compliance Audit -->
+      <div class="panel-box">
+        <div class="panel-heading">
+          <div class="panel-title">Auditor de Cumplimiento OWASP & Endpoints</div>
+          <span class="panel-chip">POSTURE AUDIT</span>
         </div>
-        <div class="kpi-value" id="kpiThreats">0</div>
-        <div class="kpi-desc">Inyecciones SQL, XSS y anomalías de red</div>
-      </div>
-
-      <div class="kpi-card warning">
-        <div class="kpi-header">
-          <span class="kpi-title">Fuerza Bruta Bloqueada</span>
-          <span class="kpi-icon">🔒</span>
-        </div>
-        <div class="kpi-value" id="kpiBruteForce">0</div>
-        <div class="kpi-desc">IPs y accesos en ráfaga neutralizados</div>
-      </div>
-
-      <div class="kpi-card info">
-        <div class="kpi-header">
-          <span class="kpi-title">Auditorías de URL</span>
-          <span class="kpi-icon">🌐</span>
-        </div>
-        <div class="kpi-value" id="kpiScans">0</div>
-        <div class="kpi-desc">Escaneos de cabeceras OWASP y salud</div>
-      </div>
-
-      <div class="kpi-card success">
-        <div class="kpi-header">
-          <span class="kpi-title">Inspecciones Totales</span>
-          <span class="kpi-icon">👁️</span>
-        </div>
-        <div class="kpi-value" id="kpiInspections">0</div>
-        <div class="kpi-desc">Payloads y formularios evaluados</div>
-      </div>
-    </section>
-
-    <!-- Main Workspace Grid -->
-    <main class="main-grid">
-      <!-- Left Column: URL Scanner & Payload Inspector -->
-      <div class="workspace-column">
-        <!-- Card 1: URL Security & OWASP Scanner -->
-        <div class="card">
-          <div class="card-header">
-            <div>
-              <h2 class="card-title">🌐 Auditor de Seguridad de URLs</h2>
-              <p class="card-subtitle">Evalúa cabeceras de blindaje, latencia y exposición de cualquier endpoint</p>
-            </div>
+        <div class="panel-content">
+          <div class="input-inline">
+            <input type="text" id="targetUrlInput" class="form-control" placeholder="http://172.16.0.163 o https://tu-dominio.com" value="http://localhost:8080">
+            <button class="btn btn-primary" id="btnScanUrl">Auditar</button>
           </div>
-          <div class="card-body">
-            <div class="input-group">
-              <input type="text" id="targetUrlInput" class="text-input" placeholder="http://172.16.0.163 o https://ejemplo.com" value="http://localhost:8080">
-              <button id="btnScanUrl" class="btn btn-primary">Auditar URL</button>
-            </div>
 
-            <div id="scanResultContainer" class="scan-result-card hidden">
-              <div class="scan-score-box">
-                <div class="score-circle" id="scoreCircle">0%</div>
-                <div>
-                  <h4 id="scoreTitle">Evaluando...</h4>
-                  <p id="scoreDetails" class="text-muted">Cabeceras y políticas de protección</p>
-                </div>
+          <!-- Dynamic Scan Report Box -->
+          <div id="scanReportArea" class="scan-report-area hidden">
+            <div class="score-summary-bar">
+              <div class="score-stat">
+                <span class="score-label">ÍNDICE DE BLINDAJE</span>
+                <span class="score-val" id="scoreValue">--%</span>
               </div>
-
-              <div class="headers-checklist" id="headersChecklist">
-                <!-- Injected dynamically -->
+              <div class="score-stat">
+                <span class="score-label">CÓDIGO HTTP</span>
+                <span class="score-val score-mono" id="statusHttp">--</span>
+              </div>
+              <div class="score-stat">
+                <span class="score-label">LATENCIA</span>
+                <span class="score-val score-mono" id="latencyHttp">-- ms</span>
               </div>
             </div>
-          </div>
-        </div>
 
-        <!-- Card 2: Interactive Payload Inspector -->
-        <div class="card">
-          <div class="card-header">
-            <div>
-              <h2 class="card-title">🧪 Inspector de Payloads & Formularios</h2>
-              <p class="card-subtitle">Verifica si una entrada contiene inyecciones o si un bot activó un Honeypot</p>
-            </div>
-          </div>
-          <div class="card-body">
-            <div class="form-row">
-              <label class="label">Cadena o Entrada de Formulario:</label>
-              <textarea id="payloadInput" class="text-area" rows="3" placeholder="Ejemplo: ' OR 1=1 --  o  <script>alert(1)</script>"></textarea>
-            </div>
-
-            <div class="form-row">
-              <label class="label">Campo Trampa (Honeypot para Bots):</label>
-              <input type="text" id="honeypotInput" class="text-input" placeholder="Dejar vacío (solo los bots automáticos lo llenan)">
-            </div>
-
-            <div class="action-bar">
-              <button id="btnInspectPayload" class="btn btn-secondary">Analizar Entrada</button>
-              <span id="inspectFeedback" class="badge hidden"></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Card 3: Attack Simulator (Portfolio Showcase) -->
-        <div class="card simulator-card">
-          <div class="card-header">
-            <div>
-              <h2 class="card-title">🎯 Simulador de Ataques Controlado</h2>
-              <p class="card-subtitle">Demuestra la capacidad de respuesta y telemetría en tiempo real</p>
-            </div>
-          </div>
-          <div class="card-body">
-            <p class="simulator-intro">Lanza vectores controlados para verificar la generación de alertas en el panel:</p>
-            <div class="sim-buttons-grid">
-              <button class="btn btn-outline" onclick="simulateAttack('sqli')">⚠️ Simular SQL Injection</button>
-              <button class="btn btn-outline" onclick="simulateAttack('bruteforce')">🔒 Simular Fuerza Bruta (6 intentos)</button>
-              <button class="btn btn-outline" onclick="simulateAttack('bot_honeypot')">🤖 Simular Bot Trampa</button>
+            <div class="headers-audit-table-wrapper">
+              <table class="table-compact">
+                <thead>
+                  <tr>
+                    <th>CABECERA DE SEGURIDAD</th>
+                    <th>ESTADO</th>
+                  </tr>
+                </thead>
+                <tbody id="headersTableBody">
+                  <!-- Injected via app.js -->
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Right Column: Live Event Stream (Terminal & SOC Logger) -->
-      <div class="workspace-column">
-        <div class="card logs-card">
-          <div class="card-header">
-            <div>
-              <h2 class="card-title">📡 Registro de Telemetría en Vivo (SOC)</h2>
-              <p class="card-subtitle">Eventos de seguridad y anomalías detectadas en tiempo real</p>
-            </div>
-            <div class="filter-pills">
-              <button class="pill active" onclick="filterEvents('ALL')">TODOS</button>
-              <button class="pill critical-pill" onclick="filterEvents('CRITICAL')">CRÍTICOS</button>
-              <button class="pill warning-pill" onclick="filterEvents('WARNING')">ALERTAS</button>
-              <button class="pill info-pill" onclick="filterEvents('INFO')">INFO</button>
-            </div>
+      <!-- Module 2: WAF Payload Inspection -->
+      <div class="panel-box">
+        <div class="panel-heading">
+          <div class="panel-title">Inspector Heurístico de Payloads</div>
+          <span class="panel-chip">WAF ENGINE</span>
+        </div>
+        <div class="panel-content">
+          <div class="form-group">
+            <label class="form-label">Cadena / Parámetro a Inspeccionar</label>
+            <textarea id="payloadInput" class="form-control form-control-mono" rows="2" placeholder="ej. ' OR '1'='1' --  o  <script>alert(1)</script>"></textarea>
           </div>
-
-          <div class="card-body logs-body">
-            <div class="events-stream" id="eventsStream">
-              <!-- Events rendered dynamically -->
-            </div>
+          <div class="form-group">
+            <label class="form-label">Campo Trampa Bot (Honeypot)</label>
+            <input type="text" id="honeypotInput" class="form-control form-control-mono" placeholder="Vacío para humanos; los crawlers automáticos lo completan">
           </div>
+          <div class="panel-actions">
+            <button class="btn btn-secondary" id="btnInspectPayload">Verificar Integridad</button>
+            <span id="inspectBadge" class="status-pill hidden"></span>
+          </div>
+        </div>
+      </div>
 
-          <div class="card-footer">
-            <span class="text-muted" id="eventCounterLabel">Total eventos: 0</span>
-            <button class="btn-text" onclick="fetchEvents()">🔄 Actualizar Flujo</button>
+      <!-- Module 3: Rule Simulation & Defense Verification -->
+      <div class="panel-box">
+        <div class="panel-heading">
+          <div class="panel-title">Simulador de Pruebas de Resiliencia</div>
+          <span class="panel-chip">AUDIT TESTS</span>
+        </div>
+        <div class="panel-content">
+          <p class="panel-desc">Genera vectores sintéticos controlados para comprobar la correlación y respuesta del centinela:</p>
+          <div class="sim-grid">
+            <button class="btn btn-outline btn-sm" onclick="runAttackSim('sqli')">Inyección SQL (CWE-89)</button>
+            <button class="btn btn-outline btn-sm" onclick="runAttackSim('xss')">XSS Reflejado (CWE-79)</button>
+            <button class="btn btn-outline btn-sm" onclick="runAttackSim('bruteforce')">Fuerza Bruta (5 Intentos/s)</button>
+            <button class="btn btn-outline btn-sm" onclick="runAttackSim('bot_honeypot')">Crawler Bot Anómalo</button>
+          </div>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- Right Panel: SOC Telemetry Stream Table -->
+    <main class="workstation-main">
+      <div class="panel-box soc-panel">
+        <div class="panel-heading">
+          <div>
+            <div class="panel-title">Flujo de Telemetría SOC (Security Operations Center)</div>
+            <div class="panel-sub">Registro de auditoría estructurado para trazabilidad e investigación forense</div>
+          </div>
+          <div class="filter-group">
+            <button class="btn-filter active" onclick="applyFilter('ALL')">TODOS</button>
+            <button class="btn-filter filter-critical" onclick="applyFilter('CRITICAL')">CRÍTICO</button>
+            <button class="btn-filter filter-high" onclick="applyFilter('HIGH')">ALTO</button>
+            <button class="btn-filter filter-medium" onclick="applyFilter('MEDIUM')">MEDIO</button>
+            <button class="btn-filter filter-info" onclick="applyFilter('INFO')">INFO</button>
+          </div>
+        </div>
+
+        <div class="soc-table-wrapper">
+          <table class="table-soc" id="socTable">
+            <thead>
+              <tr>
+                <th style="width: 130px;">TIMESTAMP</th>
+                <th style="width: 90px;">SEVERIDAD</th>
+                <th style="width: 110px;">REGLA / ID</th>
+                <th style="width: 120px;">IP ORIGEN</th>
+                <th style="width: 140px;">ENDPOINT</th>
+                <th>DESCRIPCIÓN TÉCNICA DEL EVENTO</th>
+                <th style="width: 95px;">ACCIÓN</th>
+              </tr>
+            </thead>
+            <tbody id="socTableBody">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+
+        <div class="panel-footer">
+          <div class="footer-stat" id="eventsCountLabel">Mostrando 0 eventos registrados</div>
+          <div class="footer-actions">
+            <span class="refresh-indicator">Actualización automática cada 3s</span>
+            <button class="btn-link" onclick="fetchSecurityFeed()">Actualizar Ahora</button>
           </div>
         </div>
       </div>
     </main>
-
-    <!-- Footer -->
-    <footer class="app-footer">
-      <p>Desarrollado como proyecto de ciberseguridad defensiva y auditoría web por <strong>Holasoyandres</strong> &bull; MIT License &bull; Código libre en GitHub</p>
-    </footer>
   </div>
+
+  <footer class="app-footer">
+    <div class="footer-left">
+      <span>WebSentinel-CS &bull; Arquitectura de Seguridad Defensiva</span>
+      <span class="separator">|</span>
+      <span>Licencia Abierta MIT</span>
+    </div>
+    <div class="footer-right">
+      <span>Repositorio Oficial: <a href="https://github.com/Holasoyandres/WebSentinel-CS" target="_blank" rel="noopener">github.com/Holasoyandres/WebSentinel-CS</a></span>
+    </div>
+  </footer>
 
   <script src="app.js"></script>
 </body>

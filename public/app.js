@@ -1,108 +1,134 @@
-// WebSentinel-CS: Interactive Frontend Engine
-let currentFilter = 'ALL';
-let allEvents = [];
+/**
+ * WebSentinel-CS :: Enterprise Frontend Telemetry Engine
+ * Author: Holasoyandres
+ */
 
-// Initialize on load
+let activeFilter = 'ALL';
+let telemetryEvents = [];
+
 document.addEventListener('DOMContentLoaded', () => {
-  fetchStats();
-  fetchEvents();
-  setInterval(fetchStats, 3000);
-  setInterval(fetchEvents, 3000);
+  initClock();
+  fetchSystemStats();
+  fetchSecurityFeed();
 
-  // Bind Buttons
-  document.getElementById('btnScanUrl').addEventListener('click', runUrlScan);
-  document.getElementById('btnInspectPayload').addEventListener('click', runPayloadInspection);
+  setInterval(fetchSystemStats, 3000);
+  setInterval(fetchSecurityFeed, 3000);
+
+  // Wire event handlers
+  document.getElementById('btnScanUrl').addEventListener('click', executeUrlAudit);
+  document.getElementById('btnInspectPayload').addEventListener('click', executePayloadInspection);
+  document.getElementById('btnExportCsv').addEventListener('click', () => {
+    window.location.href = '/api/export-csv';
+  });
 });
 
-// Fetch KPI metrics & uptime
-async function fetchStats() {
+// UTC System Clock
+function initClock() {
+  function update() {
+    const now = new Date();
+    const utc = now.toUTCString().split(' ')[4] + ' UTC';
+    const clockEl = document.getElementById('systemClock');
+    if (clockEl) clockEl.textContent = utc;
+  }
+  update();
+  setInterval(update, 1000);
+}
+
+// Global System Stats
+async function fetchSystemStats() {
   try {
     const res = await fetch('/api/stats');
     if (!res.ok) return;
     const data = await res.json();
 
-    document.getElementById('kpiThreats').textContent = data.threatsDetected;
-    document.getElementById('kpiBruteForce').textContent = data.bruteForceBlocked;
-    document.getElementById('kpiScans').textContent = data.totalScans;
-    document.getElementById('kpiInspections').textContent = data.inspectionsRun;
+    document.getElementById('kpiThreats').textContent = data.threatsDetected.toLocaleString();
+    document.getElementById('kpiBruteForce').textContent = data.bruteForceBlocked.toLocaleString();
+    document.getElementById('kpiScans').textContent = data.totalScans.toLocaleString();
+    document.getElementById('kpiInspections').textContent = data.inspectionsRun.toLocaleString();
 
-    // Format Uptime
     const sec = data.uptimeSeconds;
     const hrs = Math.floor(sec / 3600);
     const mins = Math.floor((sec % 3600) / 60);
     const s = sec % 60;
-    document.getElementById('uptimeBadge').textContent = `Uptime: ${hrs}h ${mins}m ${s}s`;
+    document.getElementById('uptimeText').textContent = `${hrs}h ${mins}m ${s}s`;
   } catch (err) {
     console.error('Stats poll error:', err);
   }
 }
 
-// Fetch security events stream
-async function fetchEvents() {
+// Fetch Security Telemetry Feed
+async function fetchSecurityFeed() {
   try {
     const res = await fetch('/api/events');
     if (!res.ok) return;
-    allEvents = await res.json();
-    renderEvents();
+    telemetryEvents = await res.json();
+    renderSocTable();
   } catch (err) {
-    console.error('Events poll error:', err);
+    console.error('Telemetry stream error:', err);
   }
 }
 
-// Render event list based on active filter
-function renderEvents() {
-  const container = document.getElementById('eventsStream');
-  const filtered = currentFilter === 'ALL' 
-    ? allEvents 
-    : allEvents.filter(e => e.severity === currentFilter);
+// Render SOC Data Table
+function renderSocTable() {
+  const tbody = document.getElementById('socTableBody');
+  const countLabel = document.getElementById('eventsCountLabel');
 
-  document.getElementById('eventCounterLabel').textContent = `Mostrando ${filtered.length} de ${allEvents.length} eventos`;
+  const filtered = activeFilter === 'ALL'
+    ? telemetryEvents
+    : telemetryEvents.filter(e => e.severity === activeFilter);
+
+  countLabel.textContent = `Mostrando ${filtered.length} de ${telemetryEvents.length} eventos en búfer`;
 
   if (filtered.length === 0) {
-    container.innerHTML = `
-      <div style="padding: 32px; text-align: center; color: var(--text-muted); font-size: 0.85rem;">
-        No hay eventos con filtro "${currentFilter}" registrados aún.
-      </div>
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="7" style="text-align: center; padding: 30px; color: var(--text-muted);">
+          Sin eventos registrados para el filtro [${activeFilter}].
+        </td>
+      </tr>
     `;
     return;
   }
 
-  container.innerHTML = filtered.map(ev => {
-    const timeStr = new Date(ev.timestamp).toLocaleTimeString();
+  tbody.innerHTML = filtered.map(ev => {
+    const date = new Date(ev.timestamp);
+    const timeFormatted = date.toISOString().replace('T', ' ').substring(11, 19);
+
     return `
-      <div class="event-row sev-${ev.severity}">
-        <div class="event-top">
-          <span class="event-type">${escapeHtml(ev.type)}</span>
-          <span class="event-time">${timeStr}</span>
-        </div>
-        <div class="event-meta">
-          <span>IP: ${escapeHtml(ev.sourceIp)}</span>
-          <span>&bull;</span>
-          <span>Objetivo: ${escapeHtml(ev.target)}</span>
-        </div>
-        <div class="event-details">${escapeHtml(ev.details)}</div>
-      </div>
+      <tr>
+        <td style="color: var(--text-muted);">${timeFormatted}</td>
+        <td>
+          <span class="badge-sev badge-sev-${ev.severity}">${ev.severity}</span>
+        </td>
+        <td style="color: var(--text-secondary);">${escapeHtml(ev.ruleId || 'N/A')}</td>
+        <td style="color: var(--color-info);">${escapeHtml(ev.sourceIp)}</td>
+        <td style="color: var(--text-primary);">${escapeHtml(ev.target)}</td>
+        <td class="col-desc">${escapeHtml(ev.details)}</td>
+        <td>
+          <span class="badge-action badge-action-${ev.action || 'LOGGED'}">${ev.action || 'LOGGED'}</span>
+        </td>
+      </tr>
     `;
   }).join('');
 }
 
-// Filter event pills
-function filterEvents(filter) {
-  currentFilter = filter;
-  document.querySelectorAll('.filter-pills .pill').forEach(btn => {
-    btn.classList.toggle('active', btn.textContent.includes(filter) || (filter === 'ALL' && btn.textContent === 'TODOS'));
+// Severity Filters
+function applyFilter(filter) {
+  activeFilter = filter;
+  document.querySelectorAll('.filter-group .btn-filter').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent === filter || (filter === 'ALL' && btn.textContent === 'TODOS'));
   });
-  renderEvents();
+  renderSocTable();
 }
 
-// Run URL security audit
-async function runUrlScan() {
+// Execute Target URL Audit
+async function executeUrlAudit() {
   const input = document.getElementById('targetUrlInput');
   const btn = document.getElementById('btnScanUrl');
-  const resultCard = document.getElementById('scanResultContainer');
+  const area = document.getElementById('scanReportArea');
   const url = input.value.trim();
 
-  if (!url) return alert('Por favor ingresa una URL válida');
+  if (!url) return alert('Por favor especifique una URL válida (http:// o https://)');
 
   btn.disabled = true;
   btn.textContent = 'Auditando...';
@@ -114,61 +140,57 @@ async function runUrlScan() {
       body: JSON.stringify({ url })
     });
     const data = await res.json();
-
-    resultCard.classList.remove('hidden');
+    area.classList.remove('hidden');
 
     if (data.error) {
-      document.getElementById('scoreCircle').textContent = 'ERR';
-      document.getElementById('scoreCircle').style.borderColor = 'var(--accent-red)';
-      document.getElementById('scoreCircle').style.color = 'var(--accent-red)';
-      document.getElementById('scoreTitle').textContent = 'Error de Conexión';
-      document.getElementById('scoreDetails').textContent = data.error;
-      document.getElementById('headersChecklist').innerHTML = '';
+      document.getElementById('scoreValue').textContent = 'FALLO';
+      document.getElementById('scoreValue').style.color = 'var(--color-critical)';
+      document.getElementById('statusHttp').textContent = 'ERR';
+      document.getElementById('latencyHttp').textContent = '--';
+      document.getElementById('headersTableBody').innerHTML = `
+        <tr><td colspan="2" style="color: var(--color-critical); padding: 8px;">${escapeHtml(data.error)}</td></tr>
+      `;
       return;
     }
 
     const score = data.securityScore;
-    const scoreColor = score >= 80 ? 'var(--accent-green)' : (score >= 50 ? 'var(--accent-amber)' : 'var(--accent-red)');
+    const scoreColor = score >= 80 ? 'var(--color-success)' : (score >= 50 ? 'var(--color-medium)' : 'var(--color-critical)');
 
-    const circle = document.getElementById('scoreCircle');
-    circle.textContent = `${score}%`;
-    circle.style.borderColor = scoreColor;
-    circle.style.color = scoreColor;
+    document.getElementById('scoreValue').textContent = `${score}%`;
+    document.getElementById('scoreValue').style.color = scoreColor;
+    document.getElementById('statusHttp').textContent = data.statusCode;
+    document.getElementById('latencyHttp').textContent = `${data.latencyMs} ms`;
 
-    document.getElementById('scoreTitle').textContent = `Calificación de Blindaje: ${score}/100`;
-    document.getElementById('scoreDetails').textContent = `Estado HTTP: ${data.statusCode} | Latencia: ${data.latencyMs}ms | Faltan ${data.missingHeadersCount} cabeceras`;
-
-    // Render headers checklist
-    const checklist = document.getElementById('headersChecklist');
-    checklist.innerHTML = Object.entries(data.headerChecks).map(([header, check]) => {
-      return `
-        <div class="header-item">
-          <div>
-            <span class="header-name">${header}</span>
-            <div style="font-size: 0.7rem; color: var(--text-muted);">${check.recommendation}</div>
-          </div>
-          <span class="badge ${check.present ? 'badge-pass' : 'badge-fail'}">
-            ${check.present ? 'PRESENTE' : 'FALTANTE'}
+    const tbody = document.getElementById('headersTableBody');
+    tbody.innerHTML = Object.values(data.headerChecks).map(h => `
+      <tr>
+        <td>
+          <div style="font-weight: 600; color: var(--text-primary);">${h.header}</div>
+          <div style="font-size: 9px; color: var(--text-muted);">${h.impact}</div>
+        </td>
+        <td style="text-align: right;">
+          <span class="${h.present ? 'badge-state-pass' : 'badge-state-fail'}">
+            ${h.present ? 'COMPLIANT' : 'MISSING'}
           </span>
-        </div>
-      `;
-    }).join('');
+        </td>
+      </tr>
+    `).join('');
 
-    fetchEvents();
-    fetchStats();
+    fetchSecurityFeed();
+    fetchSystemStats();
   } catch (err) {
-    alert('Error al conectar con la API de escaneo: ' + err.message);
+    alert('Fallo al conectar con la API de auditoría: ' + err.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Auditar URL';
+    btn.textContent = 'Auditar';
   }
 }
 
-// Run interactive payload inspection
-async function runPayloadInspection() {
+// Execute Heuristic Payload Inspection
+async function executePayloadInspection() {
   const input = document.getElementById('payloadInput').value;
   const honeypot = document.getElementById('honeypotInput').value;
-  const feedback = document.getElementById('inspectFeedback');
+  const badge = document.getElementById('inspectBadge');
   const btn = document.getElementById('btnInspectPayload');
 
   btn.disabled = true;
@@ -176,44 +198,48 @@ async function runPayloadInspection() {
     const res = await fetch('/api/analyze-request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input, honeypot, targetEndpoint: '/formulario-inspeccion' })
+      body: JSON.stringify({ input, honeypot, targetEndpoint: '/api/v1/auth/probe' })
     });
     const data = await res.json();
+    badge.classList.remove('hidden');
 
-    feedback.classList.remove('hidden');
     if (data.safe) {
-      feedback.className = 'badge badge-pass';
-      feedback.textContent = '✓ ENTRADA LIMPIA Y SEGURA';
+      badge.style.background = 'var(--color-success-bg)';
+      badge.style.color = 'var(--color-success)';
+      badge.style.border = '1px solid var(--color-success-border)';
+      badge.textContent = 'INTEGRIDAD VERIFICADA: SEGURO';
     } else {
-      feedback.className = 'badge badge-fail';
-      feedback.textContent = `⚠️ ${data.threatCount} AMENAZA(S) DETECTADA(S)`;
+      badge.style.background = 'var(--color-critical-bg)';
+      badge.style.color = 'var(--color-critical)';
+      badge.style.border = '1px solid var(--color-critical-border)';
+      badge.textContent = `AMENAZA INTERCEPTADA (${data.threatCount})`;
     }
 
-    fetchEvents();
-    fetchStats();
+    fetchSecurityFeed();
+    fetchSystemStats();
   } catch (err) {
-    alert('Error al analizar payload: ' + err.message);
+    alert('Error al ejecutar inspección: ' + err.message);
   } finally {
     btn.disabled = false;
   }
 }
 
-// Simulate attack for live portfolio demo
-async function simulateAttack(vector) {
+// Attack Simulation Benchmarks
+async function runAttackSim(vector) {
   try {
     await fetch('/api/simulate-attack', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ vector })
     });
-    fetchEvents();
-    fetchStats();
+    fetchSecurityFeed();
+    fetchSystemStats();
   } catch (err) {
-    alert('Error al simular ataque: ' + err.message);
+    alert('Fallo en vector de simulación: ' + err.message);
   }
 }
 
-// Helper: Escape HTML
+// HTML Sanitizer
 function escapeHtml(str) {
   if (!str) return '';
   return String(str)

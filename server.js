@@ -1,13 +1,7 @@
 /**
- * WebSentinel-CS: Standalone Web Security & Anomaly Detection Sentinel
- * Developed by Holasoyandres (Open Source Security Portfolio Project)
- * 
- * Features:
- * - Native HTTP Server (Zero external dependencies)
- * - Security Headers & Sensitive Files Vulnerability Scanner
- * - Brute-Force & Credential Stuffing Anomaly Detection Engine
- * - SQLi, XSS, Path Traversal & Bot Honeypot Input Inspection
- * - Real-time Security Event Logging & Metrics API
+ * WebSentinel-CS :: Enterprise Security & Telemetry Sentinel
+ * Architecture: Standalone Out-of-Band Security Monitor
+ * Author: Holasoyandres (MIT License)
  */
 
 const http = require('http');
@@ -19,10 +13,10 @@ const url = require('url');
 const PORT = process.env.PORT || 4000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// --- In-Memory State & Metrics Store ---
+// State & Telemetry Store
 const securityEvents = [];
-const ipAttempts = new Map(); // IP -> Array of timestamps
-const MAX_EVENTS = 100;
+const ipAttempts = new Map();
+const MAX_EVENTS = 250;
 
 const stats = {
   totalScans: 0,
@@ -32,62 +26,64 @@ const stats = {
   startTime: Date.now()
 };
 
-// Helper: Log security event
-function logEvent(type, severity, sourceIp, target, details) {
+function logEvent(type, severity, sourceIp, target, ruleId, details, action = 'LOGGED') {
   const event = {
-    id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
+    id: 'SEC-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substr(2, 4).toUpperCase(),
     timestamp: new Date().toISOString(),
     type,
-    severity, // 'INFO', 'WARNING', 'DANGER', 'CRITICAL'
+    severity, // 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'
     sourceIp: sourceIp || '127.0.0.1',
-    target: target || 'API/Web',
-    details
+    target: target || '/api',
+    ruleId: ruleId || 'RULE-GENERIC',
+    details,
+    action
   };
   securityEvents.unshift(event);
   if (securityEvents.length > MAX_EVENTS) securityEvents.pop();
-  if (severity === 'DANGER' || severity === 'CRITICAL') {
+
+  if (severity === 'CRITICAL' || severity === 'HIGH') {
     stats.threatsDetected++;
   }
   return event;
 }
 
-// Initial system event
-logEvent('SYSTEM_START', 'INFO', '127.0.0.1', 'Sentinel Core', 'WebSentinel-CS initialized and listening on port ' + PORT);
+// Initial engine telemetry
+logEvent('CORE_INITIALIZED', 'INFO', '127.0.0.1', 'SYSTEM', 'RULE-CORE-001', 'WebSentinel enterprise daemon operational on port ' + PORT, 'MONITORING');
 
-// --- Inspection Engines ---
-
-// 1. Signature & Heuristic Pattern Matching
-const MALICIOUS_PATTERNS = [
-  { name: 'SQL Injection (Boolean/Tautology)', regex: /('|\b)(OR|AND)\b.+(=|<|>).+/i, severity: 'CRITICAL' },
-  { name: 'SQL Injection (Union Based)', regex: /\bUNION\b\s+(\bALL\b\s+)?\bSELECT\b/i, severity: 'CRITICAL' },
-  { name: 'SQL Injection (Stacked/Comment)', regex: /(--|\/\*|;.*(DROP|ALTER|INSERT|UPDATE|DELETE))/i, severity: 'CRITICAL' },
-  { name: 'Cross-Site Scripting (XSS Tag)', regex: /<script\b[^>]*>([\s\S]*?)<\/script>/i, severity: 'DANGER' },
-  { name: 'Cross-Site Scripting (Inline Event)', regex: /on(error|load|click|mouseover|submit)\s*=/i, severity: 'DANGER' },
-  { name: 'Cross-Site Scripting (JS Protocol)', regex: /javascript\s*:/i, severity: 'DANGER' },
-  { name: 'Path Traversal (Directory Climb)', regex: /(\.\.\/|\.\.\\)/i, severity: 'CRITICAL' },
-  { name: 'Sensitive File Access (/etc/passwd)', regex: /(\/etc\/passwd|win\.ini|boot\.ini)/i, severity: 'CRITICAL' }
+// Threat Detection Signatures
+const SIGNATURE_DATABASE = [
+  { id: 'SIG-SQLI-001', name: 'SQL Injection: Tautology / Boolean Bypass', regex: /('|\b)(OR|AND)\b.+(=|<|>).+/i, severity: 'CRITICAL', cwe: 'CWE-89' },
+  { id: 'SIG-SQLI-002', name: 'SQL Injection: UNION-Based Exfiltration', regex: /\bUNION\b\s+(\bALL\b\s+)?\bSELECT\b/i, severity: 'CRITICAL', cwe: 'CWE-89' },
+  { id: 'SIG-SQLI-003', name: 'SQL Injection: Inline Comment / Stacked Query', regex: /(--|\/\*|;\s*(DROP|ALTER|INSERT|UPDATE|DELETE|EXEC)\b)/i, severity: 'CRITICAL', cwe: 'CWE-89' },
+  { id: 'SIG-XSS-001',  name: 'Cross-Site Scripting: Explicit Tag Injection', regex: /<script\b[^>]*>([\s\S]*?)<\/script>/i, severity: 'HIGH', cwe: 'CWE-79' },
+  { id: 'SIG-XSS-002',  name: 'Cross-Site Scripting: Inline Event Attribute', regex: /on(error|load|click|mouseover|submit|focus)\s*=/i, severity: 'HIGH', cwe: 'CWE-79' },
+  { id: 'SIG-XSS-003',  name: 'Cross-Site Scripting: URI Scheme Invocation', regex: /javascript\s*:/i, severity: 'HIGH', cwe: 'CWE-79' },
+  { id: 'SIG-PATH-001', name: 'Path Traversal: Directory Climb Sequence', regex: /(\.\.\/|\.\.\\)/i, severity: 'HIGH', cwe: 'CWE-22' },
+  { id: 'SIG-PATH-002', name: 'LFI: Sensitive Configuration Probe', regex: /(\/etc\/passwd|win\.ini|boot\.ini|\.env|\.git)/i, severity: 'CRITICAL', cwe: 'CWE-22' }
 ];
 
 function inspectPayload(inputString, honeypotValue) {
   const matches = [];
 
-  // Check honeypot (Bot detection)
   if (honeypotValue && honeypotValue.trim().length > 0) {
     matches.push({
-      name: 'Bot Honeypot Trap Triggered',
-      severity: 'CRITICAL',
-      reason: 'Hidden bot verification field was filled out.'
+      ruleId: 'SIG-BOT-001',
+      name: 'Automated Bot Trapped (Honeypot Non-Zero)',
+      severity: 'HIGH',
+      cwe: 'CWE-799',
+      reason: 'Hidden bot field was populated by client.'
     });
   }
 
-  // Check injection patterns
   if (typeof inputString === 'string') {
-    for (const pattern of MALICIOUS_PATTERNS) {
-      if (pattern.regex.test(inputString)) {
+    for (const sig of SIGNATURE_DATABASE) {
+      if (sig.regex.test(inputString)) {
         matches.push({
-          name: pattern.name,
-          severity: pattern.severity,
-          reason: `Matched pattern rule: ${pattern.name}`
+          ruleId: sig.id,
+          name: sig.name,
+          severity: sig.severity,
+          cwe: sig.cwe,
+          reason: `Matched detection signature ${sig.id}`
         });
       }
     }
@@ -96,39 +92,37 @@ function inspectPayload(inputString, honeypotValue) {
   return matches;
 }
 
-// 2. Sliding-Window Rate Limiting (Brute Force Detection)
-const BRUTE_FORCE_WINDOW_MS = 60 * 1000; // 1 minute
-const BRUTE_FORCE_MAX_FAILURES = 5;
+// Sliding Window Rate Limiter
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX_FAILURES = 5;
 
-function checkBruteForce(ip, isFailed) {
+function evaluateRateLimit(ip, isFailed) {
   const now = Date.now();
   let timestamps = ipAttempts.get(ip) || [];
-
-  // Retain only timestamps within window
-  timestamps = timestamps.filter(t => (now - t) < BRUTE_FORCE_WINDOW_MS);
+  timestamps = timestamps.filter(t => (now - t) < RATE_LIMIT_WINDOW_MS);
 
   if (isFailed) {
     timestamps.push(now);
   }
   ipAttempts.set(ip, timestamps);
 
-  const isBlocked = timestamps.length >= BRUTE_FORCE_MAX_FAILURES;
+  const isBlocked = timestamps.length >= RATE_LIMIT_MAX_FAILURES;
   return {
     isBlocked,
     recentFailures: timestamps.length,
-    threshold: BRUTE_FORCE_MAX_FAILURES,
-    retryAfterSec: isBlocked ? Math.ceil((timestamps[0] + BRUTE_FORCE_WINDOW_MS - now) / 1000) : 0
+    threshold: RATE_LIMIT_MAX_FAILURES,
+    retryAfterSec: isBlocked ? Math.ceil((timestamps[0] + RATE_LIMIT_WINDOW_MS - now) / 1000) : 0
   };
 }
 
-// 3. Remote URL Security Scanner
+// Target URL Security Auditing
 async function auditTargetUrl(targetUrl) {
   return new Promise((resolve) => {
     let parsedUrl;
     try {
       parsedUrl = new URL(targetUrl);
     } catch (e) {
-      return resolve({ error: 'Invalid URL format' });
+      return resolve({ error: 'Formato de URL inválido. Use http:// o https://' });
     }
 
     const client = parsedUrl.protocol === 'https:' ? https : http;
@@ -138,60 +132,66 @@ async function auditTargetUrl(targetUrl) {
       const latencyMs = Date.now() - startTime;
       const headers = res.headers;
 
-      // Audit Recommended Security Headers (OWASP)
-      const headerChecks = {
-        'Content-Security-Policy': {
+      const headerStandards = {
+        'content-security-policy': {
+          header: 'Content-Security-Policy',
           present: Boolean(headers['content-security-policy']),
-          recommendation: 'Protects against XSS, clickjacking, and code injection.'
+          impact: 'Mitigación de XSS, Clickjacking e inyección dinámica',
+          severity: 'HIGH'
         },
-        'X-Frame-Options': {
+        'x-frame-options': {
+          header: 'X-Frame-Options',
           present: Boolean(headers['x-frame-options']),
-          recommendation: 'Prevents clickjacking by controlling framing.'
+          impact: 'Protección contra Clickjacking y anidamiento en frames',
+          severity: 'MEDIUM'
         },
-        'X-Content-Type-Options': {
-          present: Boolean(headers['x-content-type-options']),
-          recommendation: 'Prevents MIME-sniffing vulnerabilities (nosniff).'
+        'x-content-type-options': {
+          header: 'X-Content-Type-Options',
+          present: headers['x-content-type-options'] === 'nosniff',
+          impact: 'Restricción de sniffing MIME indebido (nosniff)',
+          severity: 'MEDIUM'
         },
-        'Strict-Transport-Security': {
+        'strict-transport-security': {
+          header: 'Strict-Transport-Security',
           present: Boolean(headers['strict-transport-security']),
-          recommendation: 'Forces secure HTTPS connections (HSTS).'
+          impact: 'Garantía obligatoria de transporte HTTPS cifrado (HSTS)',
+          severity: parsedUrl.protocol === 'https:' ? 'HIGH' : 'LOW'
         },
-        'Referrer-Policy': {
+        'referrer-policy': {
+          header: 'Referrer-Policy',
           present: Boolean(headers['referrer-policy']),
-          recommendation: 'Controls how much referrer information is leaked.'
+          impact: 'Control de fuga de metadatos en peticiones salientes',
+          severity: 'LOW'
         }
       };
 
-      const missingHeaders = Object.keys(headerChecks).filter(h => !headerChecks[h].present);
-      const score = Math.max(10, 100 - (missingHeaders.length * 18));
+      const missing = Object.values(headerStandards).filter(h => !h.present);
+      const score = Math.max(10, 100 - (missing.length * 18));
 
       resolve({
         url: targetUrl,
         statusCode: res.statusCode,
         latencyMs,
         securityScore: score,
-        headerChecks,
-        missingHeadersCount: missingHeaders.length
+        headerChecks: headerStandards,
+        missingHeadersCount: missing.length,
+        rawHeaders: headers
       });
     });
 
-    req.on('error', (err) => {
-      resolve({ error: `Connection failed: ${err.message}` });
-    });
-
+    req.on('error', (err) => resolve({ error: `Fallo de conexión: ${err.message}` }));
     req.on('timeout', () => {
       req.destroy();
-      resolve({ error: 'Request timed out after 8 seconds' });
+      resolve({ error: 'Tiempo de espera excedido (> 8000ms)' });
     });
   });
 }
 
-// --- HTTP Request Handler ---
+// Server Dispatcher
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
 
-  // Set CORS for local integration
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -202,24 +202,37 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // --- API Endpoints ---
+  // --- API Routes ---
 
   // GET /api/stats
   if (req.method === 'GET' && pathname === '/api/stats') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    return res.end(JSON.stringify({
       ...stats,
       uptimeSeconds: Math.floor((Date.now() - stats.startTime) / 1000),
-      activeEventCount: securityEvents.length
+      eventsCount: securityEvents.length,
+      engineStatus: 'ACTIVE_ARMED'
     }));
-    return;
   }
 
   // GET /api/events
   if (req.method === 'GET' && pathname === '/api/events') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(securityEvents));
-    return;
+    return res.end(JSON.stringify(securityEvents));
+  }
+
+  // GET /api/export-csv
+  if (req.method === 'GET' && pathname === '/api/export-csv') {
+    let csv = 'ID,TIMESTAMP,SEVERITY,TYPE,RULE_ID,SOURCE_IP,TARGET,ACTION,DETAILS\n';
+    for (const ev of securityEvents) {
+      const cleanDetails = (ev.details || '').replace(/"/g, '""');
+      csv += `"${ev.id}","${ev.timestamp}","${ev.severity}","${ev.type}","${ev.ruleId}","${ev.sourceIp}","${ev.target}","${ev.action}","${cleanDetails}"\n`;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="websentinel-audit-events.csv"'
+    });
+    return res.end(csv);
   }
 
   // POST /api/scan
@@ -228,30 +241,25 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
       try {
-        const data = JSON.parse(body || '{}');
-        const target = data.url;
-        if (!target) {
+        const payload = JSON.parse(body || '{}');
+        if (!payload.url) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'URL parameter is required' }));
+          return res.end(JSON.stringify({ error: 'Parámetro URL requerido' }));
         }
 
         stats.totalScans++;
-        const auditResult = await auditTargetUrl(target);
+        const audit = await auditTargetUrl(payload.url);
 
-        if (!auditResult.error) {
-          logEvent(
-            'URL_AUDIT_COMPLETE',
-            auditResult.securityScore < 60 ? 'WARNING' : 'INFO',
-            req.socket.remoteAddress,
-            target,
-            `Scan finished. Score: ${auditResult.securityScore}%. Missing headers: ${auditResult.missingHeadersCount}. Latency: ${auditResult.latencyMs}ms.`
-          );
+        if (!audit.error) {
+          const sev = audit.securityScore < 50 ? 'HIGH' : (audit.securityScore < 80 ? 'MEDIUM' : 'INFO');
+          logEvent('URL_AUDIT_PROBE', sev, req.socket.remoteAddress, payload.url, 'RULE-AUDIT-01',
+            `Auditoría completada. Calificación: ${audit.securityScore}/100. Faltantes: ${audit.missingHeadersCount}. Latencia: ${audit.latencyMs}ms.`, 'AUDITED');
         } else {
-          logEvent('URL_AUDIT_FAILED', 'WARNING', req.socket.remoteAddress, target, auditResult.error);
+          logEvent('URL_AUDIT_FAILURE', 'MEDIUM', req.socket.remoteAddress, payload.url, 'RULE-AUDIT-02', audit.error, 'DROPPED');
         }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(auditResult));
+        res.end(JSON.stringify(audit));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
@@ -260,7 +268,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /api/analyze-request (Inspect input payloads & honeypots)
+  // POST /api/analyze-request
   if (req.method === 'POST' && pathname === '/api/analyze-request') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -271,19 +279,18 @@ const server = http.createServer(async (req, res) => {
         const input = data.input || '';
         const honeypot = data.honeypot || '';
         const clientIp = data.clientIp || req.socket.remoteAddress || '127.0.0.1';
+        const target = data.targetEndpoint || '/api/v1/resource';
 
         const threats = inspectPayload(input, honeypot);
 
         if (threats.length > 0) {
-          logEvent(
-            'MALICIOUS_INPUT_DETECTED',
-            'CRITICAL',
-            clientIp,
-            data.targetEndpoint || '/form-submission',
-            `Threats found: ${threats.map(t => t.name).join(', ')}. Payload sample: "${input.substring(0, 40)}..."`
-          );
+          for (const t of threats) {
+            logEvent('INJECTION_THREAT', t.severity, clientIp, target, t.ruleId,
+              `${t.name} (${t.cwe}). Muestra: "${input.substring(0, 48)}"`, 'BLOCKED');
+          }
         } else {
-          logEvent('CLEAN_INPUT_VERIFIED', 'INFO', clientIp, data.targetEndpoint || '/form-submission', 'Input validated cleanly against OWASP signature set.');
+          logEvent('PAYLOAD_INSPECTED', 'INFO', clientIp, target, 'RULE-WAF-CLEAN',
+            'Comprobación de integridad exitosa. Sin patrones maliciosos conocidos.', 'PASSED');
         }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -294,13 +301,13 @@ const server = http.createServer(async (req, res) => {
         }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON payload' }));
+        res.end(JSON.stringify({ error: 'JSON malformado' }));
       }
     });
     return;
   }
 
-  // POST /api/record-login (Brute force & authentication monitor)
+  // POST /api/record-login
   if (req.method === 'POST' && pathname === '/api/record-login') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -308,46 +315,37 @@ const server = http.createServer(async (req, res) => {
       try {
         const data = JSON.parse(body || '{}');
         const clientIp = data.clientIp || req.socket.remoteAddress || '127.0.0.1';
-        const email = data.email || 'anonymous';
+        const identifier = data.identifier || 'anonymous';
         const isSuccess = Boolean(data.success);
 
-        const rateStatus = checkBruteForce(clientIp, !isSuccess);
+        const rate = evaluateRateLimit(clientIp, !isSuccess);
 
-        if (rateStatus.isBlocked) {
+        if (rate.isBlocked) {
           stats.bruteForceBlocked++;
-          logEvent(
-            'BRUTE_FORCE_BLOCKED',
-            'CRITICAL',
-            clientIp,
-            '/login',
-            `IP rate limit exceeded (${rateStatus.recentFailures} failures in window). Temporarily blocked for ${rateStatus.retryAfterSec}s.`
-          );
+          logEvent('AUTH_BRUTEFORCE_MITIGATED', 'CRITICAL', clientIp, '/auth/login', 'RULE-RATE-001',
+            `Límite de tasa excedido (${rate.recentFailures} fallos/min). IP en cooldown por ${rate.retryAfterSec}s.`, 'IP_BLOCKED');
         } else if (!isSuccess) {
-          logEvent(
-            'LOGIN_FAILED',
-            rateStatus.recentFailures >= 3 ? 'WARNING' : 'INFO',
-            clientIp,
-            '/login',
-            `Failed authentication attempt for "${email}" (${rateStatus.recentFailures}/${rateStatus.threshold} attempts).`
-          );
+          logEvent('AUTH_FAILURE', rate.recentFailures >= 3 ? 'HIGH' : 'LOW', clientIp, '/auth/login', 'RULE-AUTH-002',
+            `Intento de autenticación fallido para identidad "${identifier}". Conteo acumulado: ${rate.recentFailures}/${rate.threshold}.`, 'REJECTED');
         } else {
-          logEvent('LOGIN_SUCCESS', 'INFO', clientIp, '/login', `Successful login verified for user "${email}".`);
+          logEvent('AUTH_SUCCESS', 'INFO', clientIp, '/auth/login', 'RULE-AUTH-001',
+            `Autenticación exitosa confirmada para "${identifier}".`, 'AUTHORIZED');
         }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          status: rateStatus.isBlocked ? 'BLOCKED' : (isSuccess ? 'AUTHORIZED' : 'DENIED'),
-          rateStatus
+          status: rate.isBlocked ? 'BLOCKED' : (isSuccess ? 'AUTHORIZED' : 'DENIED'),
+          rate
         }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid request' }));
+        res.end(JSON.stringify({ error: 'Petición inválida' }));
       }
     });
     return;
   }
 
-  // POST /api/simulate-attack (Demonstration tool for testing defense rules)
+  // POST /api/simulate-attack
   if (req.method === 'POST' && pathname === '/api/simulate-attack') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -357,16 +355,21 @@ const server = http.createServer(async (req, res) => {
       const fakeIp = `198.51.100.${Math.floor(Math.random() * 200) + 10}`;
 
       if (vector === 'sqli') {
-        inspectPayload("' OR 1=1 --", '');
-        logEvent('SIMULATED_ATTACK', 'CRITICAL', fakeIp, '/api/denuncias/query', 'Simulated SQL Injection: Payload [\' OR 1=1 --] blocked by rule.');
+        logEvent('INJECTION_THREAT', 'CRITICAL', fakeIp, '/api/records/query', 'SIG-SQLI-001',
+          "Ataque simulado: [SELECT * FROM users WHERE id = '' OR 1=1 --]. Interceptado por motor heurístico.", 'BLOCKED');
       } else if (vector === 'bruteforce') {
-        for (let i = 0; i < 6; i++) {
-          checkBruteForce(fakeIp, true);
+        for (let i = 0; i < 5; i++) {
+          evaluateRateLimit(fakeIp, true);
         }
         stats.bruteForceBlocked++;
-        logEvent('SIMULATED_ATTACK', 'CRITICAL', fakeIp, '/login', `Simulated Brute-Force attack: 6 rapid failed attempts. IP blocked.`);
+        logEvent('AUTH_BRUTEFORCE_MITIGATED', 'CRITICAL', fakeIp, '/auth/admin', 'SIG-RATE-001',
+          `Ataque de diccionario simulado: 5 intentos en 1.8s. Dirección IP bloqueada temporalmente.`, 'IP_BLOCKED');
       } else if (vector === 'bot_honeypot') {
-        logEvent('SIMULATED_ATTACK', 'DANGER', fakeIp, '/form-pqr', 'Simulated Automated Bot: Hidden honeypot field filled by crawler.');
+        logEvent('BOT_ANOMALY', 'HIGH', fakeIp, '/portal/contacto', 'SIG-BOT-001',
+          'Rastreador automatizado neutralizado: Campo trampa de verificación poblado con valor sintético.', 'REJECTED');
+      } else if (vector === 'xss') {
+        logEvent('INJECTION_THREAT', 'HIGH', fakeIp, '/portal/comentarios', 'SIG-XSS-001',
+          'Inyección XSS reflejada detectada: [<script>document.cookie</script>]. Sanitización forzada.', 'BLOCKED');
       }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -375,38 +378,28 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // --- Static Files Serving ---
+  // Static Assets Dispatcher
   let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
   const ext = path.extname(filePath);
   const mimeTypes = {
-    '.html': 'text/html',
-    '.css': 'text/css',
-    '.js': 'application/javascript',
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
     '.json': 'application/json',
-    '.svg': 'image/svg+xml',
-    '.png': 'image/png'
+    '.svg': 'image/svg+xml'
   };
 
   fs.readFile(filePath, (err, content) => {
     if (err) {
-      if (err.code === 'ENOENT') {
-        res.writeHead(404, { 'Content-Type': 'text/html' });
-        res.end('<h1>404 Not Found</h1><p>WebSentinel-CS endpoint or file not found.</p>');
-      } else {
-        res.writeHead(500);
-        res.end(`Server Error: ${err.code}`);
-      }
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('404 Not Found');
     } else {
       res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'text/plain' });
-      res.end(content, 'utf-8');
+      res.end(content);
     }
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`=======================================================`);
-  console.log(`🛡️  WebSentinel-CS: Security & Anomaly Detection Sentinel`);
-  console.log(`📡  Server active at: http://localhost:${PORT}`);
-  console.log(`🌐  Open in browser to access the Cyber Security Dashboard`);
-  console.log(`=======================================================`);
+  console.log(`[WebSentinel-CS Engine] Daemon active: http://localhost:${PORT}`);
 });
