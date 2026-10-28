@@ -1,6 +1,6 @@
 /**
- * WebSentinel-CS :: Enterprise Security & Telemetry Sentinel
- * Architecture: Standalone Out-of-Band Security Monitor
+ * WebSentinel-CS :: Enterprise Security Engine with Persistent SQLite Storage
+ * Architecture: Standalone Out-of-Band Security Sentinel
  * Author: Holasoyandres (MIT License)
  */
 
@@ -9,15 +9,13 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
+const storage = require('./database');
 
 const PORT = process.env.PORT || 4000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// State & Telemetry Store
-const securityEvents = [];
+// State Cache
 const ipAttempts = new Map();
-const MAX_EVENTS = 250;
-
 const stats = {
   totalScans: 0,
   threatsDetected: 0,
@@ -38,8 +36,9 @@ function logEvent(type, severity, sourceIp, target, ruleId, details, action = 'L
     details,
     action
   };
-  securityEvents.unshift(event);
-  if (securityEvents.length > MAX_EVENTS) securityEvents.pop();
+
+  // Persist to native SQLite
+  storage.insertIncident(event);
 
   if (severity === 'CRITICAL' || severity === 'HIGH') {
     stats.threatsDetected++;
@@ -48,9 +47,9 @@ function logEvent(type, severity, sourceIp, target, ruleId, details, action = 'L
 }
 
 // Initial engine telemetry
-logEvent('CORE_INITIALIZED', 'INFO', '127.0.0.1', 'SYSTEM', 'RULE-CORE-001', 'WebSentinel enterprise daemon operational on port ' + PORT, 'MONITORING');
+logEvent('CORE_INITIALIZED', 'INFO', '127.0.0.1', 'SYSTEM', 'RULE-CORE-001', 'WebSentinel enterprise daemon operational with native SQLite storage engine.', 'MONITORING');
 
-// Threat Detection Signatures
+// Threat Detection Signatures (OWASP & CWE Mapped)
 const SIGNATURE_DATABASE = [
   { id: 'SIG-SQLI-001', name: 'SQL Injection: Tautology / Boolean Bypass', regex: /('|\b)(OR|AND)\b.+(=|<|>).+/i, severity: 'CRITICAL', cwe: 'CWE-89' },
   { id: 'SIG-SQLI-002', name: 'SQL Injection: UNION-Based Exfiltration', regex: /\bUNION\b\s+(\bALL\b\s+)?\bSELECT\b/i, severity: 'CRITICAL', cwe: 'CWE-89' },
@@ -168,7 +167,7 @@ async function auditTargetUrl(targetUrl) {
       const missing = Object.values(headerStandards).filter(h => !h.present);
       const score = Math.max(10, 100 - (missing.length * 18));
 
-      resolve({
+      const result = {
         url: targetUrl,
         statusCode: res.statusCode,
         latencyMs,
@@ -176,7 +175,10 @@ async function auditTargetUrl(targetUrl) {
         headerChecks: headerStandards,
         missingHeadersCount: missing.length,
         rawHeaders: headers
-      });
+      };
+
+      storage.saveScanResult(result);
+      resolve(result);
     });
 
     req.on('error', (err) => resolve({ error: `Fallo de conexión: ${err.message}` }));
@@ -194,7 +196,7 @@ const server = http.createServer(async (req, res) => {
 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Sentinel-Key');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -206,27 +208,60 @@ const server = http.createServer(async (req, res) => {
 
   // GET /api/stats
   if (req.method === 'GET' && pathname === '/api/stats') {
+    const summary = storage.getAnalyticsSummary();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({
       ...stats,
       uptimeSeconds: Math.floor((Date.now() - stats.startTime) / 1000),
-      eventsCount: securityEvents.length,
-      engineStatus: 'ACTIVE_ARMED'
+      totalPersistedIncidents: summary.totalIncidents,
+      criticalCount: summary.criticalCount,
+      engineStatus: 'ACTIVE_ARMED',
+      storageEngine: 'SQLITE_PERSISTENT'
     }));
   }
 
-  // GET /api/events
+  // GET /api/events (Read directly from SQLite)
   if (req.method === 'GET' && pathname === '/api/events') {
+    const severity = parsed.query.severity || 'ALL';
+    const limit = parseInt(parsed.query.limit || '100', 10);
+    const rows = storage.getIncidents(limit, severity);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify(securityEvents));
+    return res.end(JSON.stringify(rows));
+  }
+
+  // GET /api/sql/summary (SQL Analytics Aggregation)
+  if (req.method === 'GET' && pathname === '/api/sql/summary') {
+    const analytics = storage.getAnalyticsSummary();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(analytics));
+  }
+
+  // POST /api/sql/query (Run read-only SQL queries from dashboard)
+  if (req.method === 'POST' && pathname === '/api/sql/query') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        const query = data.query || 'SELECT * FROM incidents ORDER BY timestamp DESC LIMIT 10';
+        const rows = storage.runReadOnlyQuery(query);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, count: rows.length, rows }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
   }
 
   // GET /api/export-csv
   if (req.method === 'GET' && pathname === '/api/export-csv') {
+    const rows = storage.getIncidents(500, 'ALL');
     let csv = 'ID,TIMESTAMP,SEVERITY,TYPE,RULE_ID,SOURCE_IP,TARGET,ACTION,DETAILS\n';
-    for (const ev of securityEvents) {
+    for (const ev of rows) {
       const cleanDetails = (ev.details || '').replace(/"/g, '""');
-      csv += `"${ev.id}","${ev.timestamp}","${ev.severity}","${ev.type}","${ev.ruleId}","${ev.sourceIp}","${ev.target}","${ev.action}","${cleanDetails}"\n`;
+      csv += `"${ev.id}","${ev.timestamp}","${ev.severity}","${ev.type}","${ev.rule_id}","${ev.source_ip}","${ev.target}","${ev.action}","${cleanDetails}"\n`;
     }
     res.writeHead(200, {
       'Content-Type': 'text/csv; charset=utf-8',
@@ -268,7 +303,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /api/analyze-request
+  // POST /api/analyze-request (Consumed by Laravel Middleware or UI)
   if (req.method === 'POST' && pathname === '/api/analyze-request') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -402,4 +437,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[WebSentinel-CS Engine] Daemon active: http://localhost:${PORT}`);
+  console.log(`[WebSentinel-CS Storage] Native SQLite database: sentinel.sqlite`);
 });

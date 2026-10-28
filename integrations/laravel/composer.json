@@ -1,0 +1,30 @@
+{
+  "name": "websentinel/laravel-sentinel",
+  "description": "Enterprise Web Security Middleware & Out-of-Band Threat Telemetry for Laravel",
+  "keywords": ["laravel", "security", "waf", "sqli", "xss", "bruteforce", "cybersecurity"],
+  "license": "MIT",
+  "type": "library",
+  "authors": [
+    {
+      "name": "Holasoyandres",
+      "homepage": "https://github.com/Holasoyandres"
+    }
+  ],
+  "require": {
+    "php": "^8.1 || ^8.2 || ^8.3 || ^8.4",
+    "illuminate/support": "^10.0 || ^11.0",
+    "illuminate/http": "^10.0 || ^11.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "WebSentinel\\": "src/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "WebSentinel\\WebSentinelServiceProvider"
+      ]
+    }
+  }
+}

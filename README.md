@@ -1,13 +1,21 @@
 # WebSentinel-CS :: Enterprise Security Operations & Telemetry Sentinel
 
 [![Node.js Engine](https://img.shields.io/badge/Node.js-v18%2B-22c55e?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Laravel Integration](https://img.shields.io/badge/Laravel-10%20%7C%2011%20Ready-FF2D20?logo=laravel&logoColor=white)](integrations/laravel/)
+[![Database Engine](https://img.shields.io/badge/Database-SQLite%20(Native%20SQL)-003B57?logo=sqlite&logoColor=white)](data/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-3b82f6.svg)](LICENSE)
 [![Standards Compliance](https://img.shields.io/badge/Standard-OWASP%20Top%2010%20%7C%20CWE-0f172a)](https://owasp.org/)
 [![Dependency Footprint](https://img.shields.io/badge/Dependencies-0%20(Pure%20Native%20Runtime)-059669)](package.json)
 
-**WebSentinel-CS** es una plataforma centinela y consola de operaciones de seguridad (SOC) ligera y desacoplada, desarrollada para la auditoría continua de postura, mitigación de ataques de fuerza bruta y análisis heurístico de peticiones web en tiempo real.
+**WebSentinel-CS** es una plataforma centinela, consola de operaciones de seguridad (SOC) y paquete de protección WAF para aplicaciones **Node.js, Laravel (PHP) y motores SQL**, desarrollada para la auditoría continua de postura, mitigación de ataques de fuerza bruta y análisis heurístico de peticiones web en tiempo real.
 
-Diseñada bajo el principio de **monitorización fuera de banda (out-of-band)**: supervisa la seguridad de aplicaciones web, portales transaccionales y APIs sin intervenir ni modificar su código fuente en producción.
+---
+
+## 🚀 Ecosistema Multitecnología: Node.js + SQL + Laravel
+
+* **Daemon Central (Node.js & SQLite):** Motor de alta velocidad (<80ms) con almacenamiento de incidentes persistente en base de datos SQL (`sentinel.sqlite`) y panel de control web.
+* **Paquete de Middleware para Laravel (`integrations/laravel/`):** Middleware WAF desacoplado que intercepta peticiones en aplicaciones Laravel 10/11, bloquea inyecciones SQL/XSS antes de tocar controladores y emite telemetría al centinela.
+* **Consola Forense SQL:** Permite a analistas ejecutar consultas SQL analíticas directamente desde la interfaz web.
 
 ---
 

@@ -17,6 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Wire event handlers
   document.getElementById('btnScanUrl').addEventListener('click', executeUrlAudit);
   document.getElementById('btnInspectPayload').addEventListener('click', executePayloadInspection);
+  document.getElementById('btnRunSql').addEventListener('click', executeSqlQuery);
   document.getElementById('btnExportCsv').addEventListener('click', () => {
     window.location.href = '/api/export-csv';
   });
@@ -249,3 +250,67 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
+
+// SQL Query Helpers
+function setSqlQuery(query) {
+  document.getElementById('sqlQueryInput').value = query;
+  executeSqlQuery();
+}
+
+async function executeSqlQuery() {
+  const query = document.getElementById('sqlQueryInput').value.trim();
+  const status = document.getElementById('sqlExecutionStatus');
+  const wrapper = document.getElementById('sqlResultWrapper');
+  const thead = document.getElementById('sqlResultHead');
+  const tbody = document.getElementById('sqlResultBody');
+  const btn = document.getElementById('btnRunSql');
+
+  if (!query) return alert('Por favor escriba una consulta SQL');
+
+  btn.disabled = true;
+  status.classList.remove('hidden');
+  status.textContent = 'EJECUTANDO...';
+  status.style.color = 'var(--color-info)';
+
+  try {
+    const res = await fetch('/api/sql/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+    const data = await res.json();
+
+    if (!data.success) {
+      status.style.color = 'var(--color-critical)';
+      status.textContent = 'ERROR EN CONSULTA';
+      alert('Error SQL: ' + data.error);
+      return;
+    }
+
+    status.style.color = 'var(--color-success)';
+    status.textContent = `${data.count} FILA(S) RECUPERADAS`;
+    wrapper.classList.remove('hidden');
+
+    if (data.rows.length === 0) {
+      thead.innerHTML = '';
+      tbody.innerHTML = '<tr><td style="padding: 8px; color: var(--text-muted);">Sin resultados.</td></tr>';
+      return;
+    }
+
+    // Render columns
+    const columns = Object.keys(data.rows[0]);
+    thead.innerHTML = `<tr>${columns.map(c => `<th>${escapeHtml(c.toUpperCase())}</th>`).join('')}</tr>`;
+
+    // Render rows
+    tbody.innerHTML = data.rows.map(r => `
+      <tr>${columns.map(c => `<td>${escapeHtml(String(r[c]))}</td>`).join('')}</tr>
+    `).join('');
+  } catch (err) {
+    status.style.color = 'var(--color-critical)';
+    status.textContent = 'FALLO DE RED';
+    alert('Error al ejecutar consulta SQL: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+

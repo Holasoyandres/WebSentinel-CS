@@ -33,6 +33,10 @@
         <span class="dot dot-active"></span>
         <span class="engine-label">MOTOR WAF ACTIVO</span>
       </div>
+      <div class="engine-badge" style="background: rgba(56, 189, 248, 0.12); border-color: rgba(56, 189, 248, 0.35);">
+        <span class="dot" style="background: var(--color-info);"></span>
+        <span class="engine-label" style="color: var(--color-info);">SQLITE PERSISTENTE</span>
+      </div>
       <div class="clock-display" id="systemClock">00:00:00 UTC</div>
       <button class="btn btn-sm btn-ghost" id="btnExportCsv" title="Descargar registro de incidentes en formato CSV">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -156,6 +160,35 @@
             <button class="btn btn-outline btn-sm" onclick="runAttackSim('xss')">XSS Reflejado (CWE-79)</button>
             <button class="btn btn-outline btn-sm" onclick="runAttackSim('bruteforce')">Fuerza Bruta (5 Intentos/s)</button>
             <button class="btn btn-outline btn-sm" onclick="runAttackSim('bot_honeypot')">Crawler Bot Anómalo</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Module 4: SQL Forensics & Database Query Console -->
+      <div class="panel-box">
+        <div class="panel-heading">
+          <div class="panel-title">Consola Forense SQL (SQLite Nativo)</div>
+          <span class="panel-chip">SQL ENGINE</span>
+        </div>
+        <div class="panel-content">
+          <div class="form-group">
+            <label class="form-label">Consulta SQL (Solo Lectura / SELECT):</label>
+            <textarea id="sqlQueryInput" class="form-control form-control-mono" rows="2">SELECT severity, count(*) as total FROM incidents GROUP BY severity;</textarea>
+          </div>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <button class="btn btn-outline btn-sm" onclick="setSqlQuery('SELECT source_ip, count(*) as hits FROM incidents GROUP BY source_ip ORDER BY hits DESC LIMIT 5;')">Top Atacantes</button>
+            <button class="btn btn-outline btn-sm" onclick="setSqlQuery('SELECT severity, count(*) as total FROM incidents GROUP BY severity;')">Por Severidad</button>
+            <button class="btn btn-outline btn-sm" onclick="setSqlQuery('SELECT id, timestamp, severity, target, action FROM incidents ORDER BY timestamp DESC LIMIT 5;')">Últimos 5</button>
+          </div>
+          <div class="panel-actions">
+            <button class="btn btn-primary btn-sm" id="btnRunSql">Ejecutar Consulta</button>
+            <span id="sqlExecutionStatus" class="status-pill hidden"></span>
+          </div>
+          <div id="sqlResultWrapper" class="headers-audit-table-wrapper hidden" style="max-height: 160px; overflow: auto;">
+            <table class="table-compact" id="sqlResultTable">
+              <thead id="sqlResultHead"></thead>
+              <tbody id="sqlResultBody"></tbody>
+            </table>
           </div>
         </div>
       </div>
