@@ -1,14 +1,16 @@
 /**
- * WebSentinel-CS :: Enterprise Frontend Telemetry Engine
+ * WebSentinel-CS :: Enterprise Frontend Telemetry Engine (Hardenized P0 Architecture)
  * Author: Holasoyandres
  */
 
 let activeFilter = 'ALL';
 let telemetryEvents = [];
 let currentSelectedSessionId = null;
+let currentCsrfToken = '';
 
 document.addEventListener('DOMContentLoaded', () => {
   initClock();
+  initAuthAndCsrf();
   fetchSystemStats();
   fetchSecurityFeed();
   fetchSessionsFeed();
@@ -17,7 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(fetchSecurityFeed, 3000);
   setInterval(fetchSessionsFeed, 5000);
 
-  // Wire event handlers
+  // Wire direct button event listeners
   const btnScan = document.getElementById('btnScanUrl');
   if (btnScan) btnScan.addEventListener('click', executeUrlAudit);
 
@@ -31,7 +33,71 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnExport) btnExport.addEventListener('click', () => {
     window.location.href = '/api/export-csv';
   });
+
+  const btnRefreshFeed = document.getElementById('btnRefreshFeed');
+  if (btnRefreshFeed) btnRefreshFeed.addEventListener('click', fetchSecurityFeed);
+
+  const btnSimulate = document.getElementById('btnSimulateSession');
+  if (btnSimulate) btnSimulate.addEventListener('click', simulateNewUserSession);
+
+  const btnRefreshSessions = document.getElementById('btnRefreshSessions');
+  if (btnRefreshSessions) btnRefreshSessions.addEventListener('click', fetchSessionsFeed);
+
+  // Global Event Delegation (Zero inline onclick handlers)
+  document.addEventListener('click', (e) => {
+    // 1. Navigation View Switcher
+    const viewBtn = e.target.closest('[data-view]');
+    if (viewBtn) {
+      switchView(viewBtn.dataset.view);
+      return;
+    }
+
+    // 2. Attack Simulation Buttons
+    const attackBtn = e.target.closest('[data-attack-sim]');
+    if (attackBtn) {
+      runAttackSim(attackBtn.dataset.attackSim);
+      return;
+    }
+
+    // 3. SQL Presets
+    const sqlPresetBtn = e.target.closest('[data-sql-preset]');
+    if (sqlPresetBtn) {
+      setSqlQuery(sqlPresetBtn.dataset.sqlPreset);
+      return;
+    }
+
+    // 4. Severity Filter Buttons
+    const filterBtn = e.target.closest('[data-filter]');
+    if (filterBtn) {
+      applyFilter(filterBtn.dataset.filter);
+      return;
+    }
+
+    // 5. Session Inspection Action
+    const inspectBtn = e.target.closest('[data-action="inspect-session"]');
+    if (inspectBtn) {
+      const sessionId = inspectBtn.dataset.sessionId;
+      const user = inspectBtn.dataset.user;
+      const ip = inspectBtn.dataset.ip;
+      const portal = inspectBtn.dataset.portal;
+      loadSessionActivities(sessionId, user, ip, portal);
+      return;
+    }
+  });
 });
+
+// Discover session identity and CSRF token
+async function initAuthAndCsrf() {
+  try {
+    const res = await fetch('/api/auth/me');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.session && data.session.csrf_token) {
+        currentCsrfToken = data.session.csrf_token;
+      }
+    }
+  } catch (_) {}
+}
 
 // UTC System Clock
 function initClock() {
@@ -102,8 +168,8 @@ function renderSocTable() {
   if (filtered.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="7" style="text-align: center; padding: 30px; color: var(--text-muted);">
-          Sin eventos registrados para el filtro [${activeFilter}].
+        <td colspan="7" style="text-align: center; padding: 40px; color: var(--text-muted);">
+          Sin incidentes registrados con el filtro [${escapeHtml(activeFilter)}]
         </td>
       </tr>
     `;
@@ -112,20 +178,26 @@ function renderSocTable() {
 
   tbody.innerHTML = filtered.map(ev => {
     const date = new Date(ev.timestamp);
-    const timeFormatted = date.toISOString().replace('T', ' ').substring(11, 19);
+    const timeFormatted = date.toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
+    const actionClass = ev.action === 'BLOCKED' ? 'action-blocked' : (ev.action === 'IP_BLOCKED' ? 'action-ip-blocked' : 'action-passed');
+    const validSev = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].includes(ev.severity) ? ev.severity : 'INFO';
 
     return `
       <tr>
-        <td style="color: var(--text-muted);">${timeFormatted}</td>
+        <td style="color: var(--text-muted); font-size: 11px;">${timeFormatted}</td>
         <td>
-          <span class="badge-sev badge-sev-${ev.severity}">${ev.severity}</span>
+          <span class="badge-sev badge-${validSev}">${validSev}</span>
         </td>
-        <td style="color: var(--text-secondary);">${escapeHtml(ev.ruleId || ev.rule_id || 'N/A')}</td>
-        <td style="color: var(--color-info);">${escapeHtml(ev.sourceIp || ev.source_ip)}</td>
-        <td style="color: var(--text-primary);">${escapeHtml(ev.target)}</td>
-        <td class="col-desc">${escapeHtml(ev.details)}</td>
         <td>
-          <span class="badge-action badge-action-${ev.action || 'LOGGED'}">${ev.action || 'LOGGED'}</span>
+          <span class="rule-tag">${escapeHtml(ev.rule_id || 'RULE-GENERIC')}</span>
+        </td>
+        <td style="font-family: var(--font-mono); color: var(--color-info);">${escapeHtml(ev.source_ip)}</td>
+        <td style="color: var(--text-secondary);">${escapeHtml(ev.target)}</td>
+        <td style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(ev.details || '')}">
+          ${escapeHtml(ev.details || '-')}
+        </td>
+        <td>
+          <span class="action-tag ${actionClass}">${escapeHtml(ev.action)}</span>
         </td>
       </tr>
     `;
@@ -135,64 +207,74 @@ function renderSocTable() {
 // Severity Filters
 function applyFilter(filter) {
   activeFilter = filter;
-  document.querySelectorAll('.filter-group .btn-filter').forEach(btn => {
-    btn.classList.toggle('active', btn.textContent === filter || (filter === 'ALL' && btn.textContent === 'TODOS'));
+  document.querySelectorAll('.btn-filter').forEach(btn => {
+    if (btn.dataset.filter === filter) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
   });
   renderSocTable();
 }
 
-// Execute Target URL Audit
+// Execute Remote URL Audit
 async function executeUrlAudit() {
-  const input = document.getElementById('targetUrlInput');
+  const urlInput = document.getElementById('targetUrlInput').value.trim();
+  const badge = document.getElementById('scanScoreBadge');
+  const summaryBox = document.getElementById('auditSummaryBox');
   const btn = document.getElementById('btnScanUrl');
-  const area = document.getElementById('scanReportArea');
-  const url = input.value.trim();
 
-  if (!url) return alert('Por favor especifique una URL válida (http:// o https://)');
+  if (!urlInput) return alert('Por favor ingrese una URL válida (ej. http://127.0.0.1:4000)');
 
   btn.disabled = true;
-  btn.textContent = 'Auditando...';
+  btn.textContent = 'Verificando...';
 
   try {
     const res = await fetch('/api/scan', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': currentCsrfToken
+      },
+      body: JSON.stringify({ url: urlInput })
     });
     const data = await res.json();
-    area.classList.remove('hidden');
 
     if (data.error) {
-      document.getElementById('scoreValue').textContent = 'FALLO';
-      document.getElementById('scoreValue').style.color = 'var(--color-critical)';
-      document.getElementById('statusHttp').textContent = 'ERR';
-      document.getElementById('latencyHttp').textContent = '--';
-      document.getElementById('headersTableBody').innerHTML = `
-        <tr><td colspan="2" style="color: var(--color-critical); padding: 8px;">${escapeHtml(data.error)}</td></tr>
-      `;
+      alert('Error en auditoría: ' + data.error);
       return;
     }
 
-    const score = data.securityScore;
-    const scoreColor = score >= 80 ? 'var(--color-success)' : (score >= 50 ? 'var(--color-medium)' : 'var(--color-critical)');
+    badge.classList.remove('hidden');
+    badge.textContent = `${data.securityScore}/100`;
 
-    document.getElementById('scoreValue').textContent = `${score}%`;
-    document.getElementById('scoreValue').style.color = scoreColor;
-    document.getElementById('statusHttp').textContent = data.statusCode;
-    document.getElementById('latencyHttp').textContent = `${data.latencyMs} ms`;
+    if (data.securityScore >= 80) {
+      badge.style.background = 'var(--color-success-bg)';
+      badge.style.color = 'var(--color-success)';
+      badge.style.border = '1px solid var(--color-success-border)';
+    } else if (data.securityScore >= 50) {
+      badge.style.background = 'var(--color-warning-bg)';
+      badge.style.color = 'var(--color-warning)';
+      badge.style.border = '1px solid var(--color-warning-border)';
+    } else {
+      badge.style.background = 'var(--color-critical-bg)';
+      badge.style.color = 'var(--color-critical)';
+      badge.style.border = '1px solid var(--color-critical-border)';
+    }
 
+    summaryBox.classList.remove('hidden');
     const tbody = document.getElementById('headersTableBody');
+    if (!tbody || !data.headerChecks) return;
+
     tbody.innerHTML = Object.values(data.headerChecks).map(h => `
       <tr>
+        <td style="font-family: var(--font-mono); font-weight: 500;">${escapeHtml(h.header)}</td>
         <td>
-          <div style="font-weight: 600; color: var(--text-primary);">${h.header}</div>
-          <div style="font-size: 9px; color: var(--text-muted);">${h.impact}</div>
+          ${h.present
+            ? '<span class="status-present">PRESENTE</span>'
+            : '<span class="status-missing">FALTANTE</span>'}
         </td>
-        <td style="text-align: right;">
-          <span class="${h.present ? 'badge-state-pass' : 'badge-state-fail'}">
-            ${h.present ? 'COMPLIANT' : 'MISSING'}
-          </span>
-        </td>
+        <td style="color: var(--text-secondary); font-size: 11px;">${escapeHtml(h.impact)}</td>
       </tr>
     `).join('');
 
@@ -217,7 +299,10 @@ async function executePayloadInspection() {
   try {
     const res = await fetch('/api/analyze-request', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': currentCsrfToken
+      },
       body: JSON.stringify({ input, honeypot, targetEndpoint: '/api/v1/auth/probe' })
     });
     const data = await res.json();
@@ -249,7 +334,10 @@ async function runAttackSim(vector) {
   try {
     await fetch('/api/simulate-attack', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': currentCsrfToken
+      },
       body: JSON.stringify({ vector })
     });
     fetchSecurityFeed();
@@ -294,7 +382,10 @@ async function executeSqlQuery() {
   try {
     const res = await fetch('/api/sql/query', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': currentCsrfToken
+      },
       body: JSON.stringify({ query })
     });
     const data = await res.json();
@@ -302,7 +393,7 @@ async function executeSqlQuery() {
     if (!data.success) {
       status.style.color = 'var(--color-critical)';
       status.textContent = 'ERROR EN CONSULTA';
-      alert('Error SQL: ' + data.error);
+      alert('Error SQL: ' + (data.message || data.error));
       return;
     }
 
@@ -331,9 +422,7 @@ async function executeSqlQuery() {
   }
 }
 
-// ==========================================
-// VIEW SWITCHER (SUBPÁGINAS)
-// ==========================================
+// View Switcher
 function switchView(viewName) {
   const socTab = document.getElementById('tabSoc');
   const sessionsTab = document.getElementById('tabSessions');
@@ -354,9 +443,7 @@ function switchView(viewName) {
   }
 }
 
-// ==========================================
-// USER SESSIONS & ACTIVITY AUDIT
-// ==========================================
+// User Sessions & Activity Audit
 async function fetchSessionsFeed() {
   try {
     const res = await fetch('/api/sessions');
@@ -409,7 +496,7 @@ function renderSessionsTable(sessions) {
     return `
       <tr class="${isSelected}">
         <td>
-          <span class="badge-status badge-status-${s.status}">${s.status}</span>
+          <span class="badge-status badge-status-${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
         </td>
         <td>
           <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(s.user_identifier)}</div>
@@ -425,7 +512,12 @@ function renderSessionsTable(sessions) {
         <td style="font-size: 10px;">${logoutFormatted}</td>
         <td style="color: var(--text-secondary); font-weight: 600;">${durationText}</td>
         <td>
-          <button class="btn btn-outline btn-sm" onclick="loadSessionActivities('${s.session_id}', '${escapeHtml(s.user_identifier)}', '${escapeHtml(s.ip_address)}', '${escapeHtml(s.login_portal)}')">
+          <button class="btn btn-outline btn-sm" 
+            data-action="inspect-session" 
+            data-session-id="${escapeHtml(s.session_id)}" 
+            data-user="${escapeHtml(s.user_identifier)}" 
+            data-ip="${escapeHtml(s.ip_address)}" 
+            data-portal="${escapeHtml(s.login_portal)}">
             Ver Trazabilidad (${s.total_activities || 0})
           </button>
         </td>
@@ -460,8 +552,10 @@ async function loadSessionActivities(sessionId, userIdentifier, ip, portal) {
 
     container.innerHTML = activities.map(act => {
       const time = new Date(act.timestamp).toISOString().replace('T', ' ').substring(11, 19) + ' UTC';
+      const safeRisk = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'NORMAL'].includes(act.risk_level) ? act.risk_level : 'NORMAL';
+
       return `
-        <div class="timeline-step risk-${act.risk_level || 'NORMAL'}">
+        <div class="timeline-step risk-${safeRisk}">
           <div class="timeline-header">
             <span class="timeline-action">${escapeHtml(act.action_type)}</span>
             <span class="timeline-time">${time}</span>
@@ -474,20 +568,26 @@ async function loadSessionActivities(sessionId, userIdentifier, ip, portal) {
 
     fetchSessionsFeed();
   } catch (err) {
-    container.innerHTML = `<div style="color: var(--color-critical); padding: 20px;">Error al cargar actividades: ${err.message}</div>`;
+    container.innerHTML = `<div style="color: var(--color-critical); padding: 20px;">Error al cargar actividades: ${escapeHtml(err.message)}</div>`;
   }
 }
 
-// Simulate a brand new user session with live activity
+// Simulate New User Session
 async function simulateNewUserSession() {
   try {
-    const res = await fetch('/api/sessions/simulate', { method: 'POST' });
+    const res = await fetch('/api/sessions/simulate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': currentCsrfToken
+      },
+      body: JSON.stringify({})
+    });
     const data = await res.json();
     if (data.success) {
-      await fetchSessionsFeed();
-      loadSessionActivities(data.sessionId, data.user, '172.16.0.88', '/tramites-suit');
+      fetchSessionsFeed();
     }
   } catch (err) {
-    alert('Error al simular sesión: ' + err.message);
+    alert('Fallo al simular sesión: ' + err.message);
   }
 }

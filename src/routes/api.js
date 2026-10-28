@@ -1,30 +1,47 @@
 /**
- * WebSentinel-CS :: API Routes Handler
- * Dispatches and processes all /api/* endpoints
+ * WebSentinel-CS :: API Routes Handler (Hardenized P0 Architecture)
+ * Dispatches and processes all /api/* endpoints with RBAC, CSRF, and Parameter Sanitization
  */
 
 const { parseJsonBody } = require('../http/body');
 const { sendJson, sendError, sendCsv } = require('../http/respond');
 const { inspectPayload } = require('../engine/signatures');
 const { auditTargetUrl } = require('../engine/scanner');
+const { authenticateRequest, verifyScryptPassword } = require('../http/auth');
+const { sanitizeAndValidateQuery, executeQueryWithWorker } = require('../engine/sql-runner');
 
-function createApiHandler({ db, rateLimiter, stats }) {
+const ALLOWED_SEVERITY = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']);
+const ALLOWED_ACTIONS = new Set(['BLOCKED', 'FLAGGED', 'CHALLENGED', 'MONITORED', 'PASSED', 'LOGGED', 'AUDITED', 'DROPPED', 'IP_BLOCKED', 'REJECTED', 'AUTHORIZED']);
+const ALLOWED_RISK_LEVELS = new Set(['CRITICAL', 'HIGH', 'ELEVATED', 'MEDIUM', 'LOW', 'NORMAL']);
+
+function getEffectiveClientIp(req, bodyIp, auth, config) {
+  // Only trust declared body IP if authenticated via API Key with 'ingest' scope
+  if (auth && auth.type === 'api_key' && auth.scopes && auth.scopes.includes('ingest') && bodyIp) {
+    return String(bodyIp).trim();
+  }
+  return req.socket.remoteAddress || '127.0.0.1';
+}
+
+function createApiHandler({ config, db, rateLimiter, stats }) {
   function logEvent(type, severity, sourceIp, target, ruleId, details, action = 'LOGGED') {
+    const sev = ALLOWED_SEVERITY.has(severity) ? severity : 'INFO';
+    const act = ALLOWED_ACTIONS.has(action) ? action : 'LOGGED';
+
     const event = {
       id: 'SEC-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substr(2, 4).toUpperCase(),
       timestamp: new Date().toISOString(),
       type,
-      severity,
+      severity: sev,
       sourceIp: sourceIp || '127.0.0.1',
       target: target || '/api',
       ruleId: ruleId || 'RULE-GENERIC',
       details,
-      action
+      action: act
     };
 
     db.insertIncident(event);
 
-    if (severity === 'CRITICAL' || severity === 'HIGH') {
+    if (sev === 'CRITICAL' || sev === 'HIGH') {
       stats.threatsDetected++;
     }
     return event;
@@ -35,7 +52,83 @@ function createApiHandler({ db, rateLimiter, stats }) {
     const method = req.method;
 
     try {
+      // -----------------------------------------------------------------------
+      // Public Route: /healthz
+      // -----------------------------------------------------------------------
+      if (pathname === '/healthz') {
+        return sendJson(res, 200, {
+          status: 'UP',
+          version: config.VERSION,
+          engine: 'ACTIVE_ARMED',
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // Public Route: POST /api/auth/login
+      // -----------------------------------------------------------------------
+      if (method === 'POST' && pathname === '/api/auth/login') {
+        const body = await parseJsonBody(req, config.MAX_BODY_BYTES);
+        const { username, password } = body;
+        if (!username || !password) {
+          return sendError(res, 400, 'Se requieren las credenciales de usuario y contraseña');
+        }
+
+        const user = db.findUserByUsername(username);
+        if (!user || !verifyScryptPassword(password, user.salt, user.password_hash)) {
+          return sendError(res, 401, 'Credenciales de acceso no válidas');
+        }
+
+        const session = db.createAuthSession(user.id, 8);
+        if (!session) {
+          return sendError(res, 500, 'No fue posible iniciar la sesión de usuario');
+        }
+
+        const isSecure = config.ENV === 'production' && req.socket.encrypted;
+        const cookieHeader = `sentinel_session=${session.sessionId}; Path=/; HttpOnly; SameSite=Strict${isSecure ? '; Secure' : ''}`;
+
+        return sendJson(res, 200, {
+          success: true,
+          user: { id: user.id, username: user.username, role: user.role },
+          csrfToken: session.csrfToken
+        }, { 'Set-Cookie': cookieHeader });
+      }
+
+      // -----------------------------------------------------------------------
+      // Centralized Authentication Check for All Other /api/* Endpoints
+      // -----------------------------------------------------------------------
+      const auth = authenticateRequest(req, db, pathname);
+      if (!auth.authenticated) {
+        return sendError(res, auth.statusCode || 401, auth.message || 'No autorizado');
+      }
+      req.auth = auth;
+
+      // -----------------------------------------------------------------------
+      // Auth Route: GET /api/auth/me
+      // -----------------------------------------------------------------------
+      if (method === 'GET' && pathname === '/api/auth/me') {
+        return sendJson(res, 200, {
+          authenticated: true,
+          type: auth.type,
+          user: auth.user || null,
+          scopes: auth.scopes || null
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // Auth Route: POST /api/auth/logout
+      // -----------------------------------------------------------------------
+      if (method === 'POST' && pathname === '/api/auth/logout') {
+        if (auth.session) {
+          db.deleteAuthSession(auth.session.id);
+        }
+        const cookieHeader = 'sentinel_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0';
+        return sendJson(res, 200, { success: true }, { 'Set-Cookie': cookieHeader });
+      }
+
+      // -----------------------------------------------------------------------
       // GET /api/stats
+      // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/stats') {
         const summary = db.getAnalyticsSummary();
         return sendJson(res, 200, {
@@ -51,33 +144,82 @@ function createApiHandler({ db, rateLimiter, stats }) {
         });
       }
 
+      // -----------------------------------------------------------------------
       // GET /api/events
+      // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/events') {
         const severity = parsedUrl.searchParams.get('severity') || 'ALL';
-        const limit = parsedUrl.searchParams.get('limit') || '100';
-        const rows = db.getIncidents(limit, severity);
+        const limitParam = parsedUrl.searchParams.get('limit') || '100';
+        const offsetParam = parsedUrl.searchParams.get('offset') || '0';
+
+        const limit = Math.min(Math.max(1, parseInt(limitParam, 10) || 100), 500);
+        const offset = Math.max(0, parseInt(offsetParam, 10) || 0);
+
+        const rows = db.getIncidents(limit, severity, offset);
         return sendJson(res, 200, rows);
       }
 
+      // -----------------------------------------------------------------------
       // GET /api/sql/summary
+      // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/sql/summary') {
         const summary = db.getAnalyticsSummary();
         return sendJson(res, 200, summary);
       }
 
-      // POST /api/sql/query
+      // -----------------------------------------------------------------------
+      // POST /api/sql/query (Hardened SQL Forensics Console)
+      // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sql/query') {
-        const body = await parseJsonBody(req);
-        const query = body.query || 'SELECT * FROM incidents ORDER BY timestamp DESC LIMIT 10';
-        try {
-          const rows = db.runReadOnlyQuery(query);
-          return sendJson(res, 200, { success: true, count: rows.length, rows });
-        } catch (err) {
-          return sendJson(res, 400, { success: false, error: err.message });
+        // Strict RBAC: Only admin role allowed
+        const userRole = (auth.user && auth.user.role) || auth.role;
+        if (userRole !== 'admin') {
+          return sendError(res, 403, 'Acceso denegado: La consola SQL requiere privilegios de administrador');
         }
+
+        const body = await parseJsonBody(req, config.MAX_BODY_BYTES);
+        const rawQuery = body.query || 'SELECT * FROM incidents ORDER BY timestamp DESC LIMIT 10';
+
+        let cleanQuery;
+        try {
+          cleanQuery = sanitizeAndValidateQuery(rawQuery);
+        } catch (valErr) {
+          return sendError(res, 400, valErr.message);
+        }
+
+        const startTime = Date.now();
+        const execResult = await executeQueryWithWorker(config.DB_PATH, cleanQuery, db, 3000);
+        const durationMs = Date.now() - startTime;
+
+        const userId = (auth.user && auth.user.id) || 'usr-admin';
+        const rowsCount = execResult.rows ? execResult.rows.length : 0;
+
+        db.insertAuditLog({
+          userId,
+          query: cleanQuery,
+          durationMs,
+          rowsReturned: rowsCount
+        });
+
+        if (execResult.timeout) {
+          return sendError(res, 408, execResult.error);
+        }
+
+        if (!execResult.success) {
+          return sendError(res, 400, execResult.error);
+        }
+
+        return sendJson(res, 200, {
+          success: true,
+          count: execResult.rows.length,
+          durationMs,
+          rows: execResult.rows
+        });
       }
 
+      // -----------------------------------------------------------------------
       // GET /api/export-csv
+      // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/export-csv') {
         const rows = db.getIncidents(500, 'ALL');
         let csv = 'ID,TIMESTAMP,SEVERITY,TYPE,RULE_ID,SOURCE_IP,TARGET,ACTION,DETAILS\n';
@@ -88,15 +230,17 @@ function createApiHandler({ db, rateLimiter, stats }) {
         return sendCsv(res, 'websentinel-audit-events.csv', csv);
       }
 
-      // POST /api/scan
+      // -----------------------------------------------------------------------
+      // POST /api/scan (SSRF-Protected URL Auditor)
+      // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/scan') {
-        const body = await parseJsonBody(req);
+        const body = await parseJsonBody(req, config.MAX_BODY_BYTES);
         if (!body.url) {
           return sendError(res, 400, 'Parámetro URL requerido');
         }
 
         stats.totalScans++;
-        const audit = await auditTargetUrl(body.url);
+        const audit = await auditTargetUrl(body.url, config.SCAN_ALLOWLIST, 3, 5000);
 
         if (!audit.error) {
           const sev = audit.securityScore < 50 ? 'HIGH' : (audit.securityScore < 80 ? 'MEDIUM' : 'INFO');
@@ -109,6 +253,8 @@ function createApiHandler({ db, rateLimiter, stats }) {
             `Auditoría completada. Calificación: ${audit.securityScore}/100. Faltantes: ${audit.missingHeadersCount}. Latencia: ${audit.latencyMs}ms.`,
             'AUDITED'
           );
+          db.saveScanResult(audit);
+          return sendJson(res, 200, audit);
         } else {
           logEvent(
             'URL_AUDIT_FAILURE',
@@ -119,19 +265,19 @@ function createApiHandler({ db, rateLimiter, stats }) {
             audit.error,
             'DROPPED'
           );
+          return sendJson(res, 200, audit);
         }
-
-        db.saveScanResult(audit);
-        return sendJson(res, 200, audit);
       }
 
+      // -----------------------------------------------------------------------
       // POST /api/analyze-request
+      // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/analyze-request') {
-        const data = await parseJsonBody(req);
+        const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
         stats.inspectionsRun++;
         const input = data.input || '';
         const honeypot = data.honeypot || '';
-        const clientIp = data.clientIp || req.socket.remoteAddress || '127.0.0.1';
+        const clientIp = getEffectiveClientIp(req, data.clientIp, auth, config);
         const target = data.targetEndpoint || '/api/v1/resource';
 
         const threats = inspectPayload(input, honeypot);
@@ -167,10 +313,12 @@ function createApiHandler({ db, rateLimiter, stats }) {
         });
       }
 
+      // -----------------------------------------------------------------------
       // POST /api/record-login
+      // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/record-login') {
-        const data = await parseJsonBody(req);
-        const clientIp = data.clientIp || req.socket.remoteAddress || '127.0.0.1';
+        const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
+        const clientIp = getEffectiveClientIp(req, data.clientIp, auth, config);
         const identifier = data.identifier || data.email || 'anonymous';
         const isSuccess = Boolean(data.success);
 
@@ -215,9 +363,11 @@ function createApiHandler({ db, rateLimiter, stats }) {
         });
       }
 
+      // -----------------------------------------------------------------------
       // POST /api/simulate-attack
+      // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/simulate-attack') {
-        const data = await parseJsonBody(req);
+        const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
         const vector = data.vector || 'sqli';
         const fakeIp = `198.51.100.${Math.floor(Math.random() * 200) + 10}`;
 
@@ -270,14 +420,22 @@ function createApiHandler({ db, rateLimiter, stats }) {
         return sendJson(res, 200, { success: true, vector, simulatedIp: fakeIp });
       }
 
+      // -----------------------------------------------------------------------
       // GET /api/sessions
+      // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/sessions') {
-        const limit = parsedUrl.searchParams.get('limit') || '50';
-        const sessions = db.getUserSessions(limit);
+        const limitParam = parsedUrl.searchParams.get('limit') || '50';
+        const offsetParam = parsedUrl.searchParams.get('offset') || '0';
+        const limit = Math.min(Math.max(1, parseInt(limitParam, 10) || 50), 500);
+        const offset = Math.max(0, parseInt(offsetParam, 10) || 0);
+
+        const sessions = db.getUserSessions(limit, offset);
         return sendJson(res, 200, sessions);
       }
 
+      // -----------------------------------------------------------------------
       // GET /api/sessions/activities
+      // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/sessions/activities') {
         const sessionId = parsedUrl.searchParams.get('sessionId');
         if (!sessionId) {
@@ -287,40 +445,56 @@ function createApiHandler({ db, rateLimiter, stats }) {
         return sendJson(res, 200, activities);
       }
 
+      // -----------------------------------------------------------------------
       // POST /api/sessions/login
+      // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sessions/login') {
-        const data = await parseJsonBody(req);
+        const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
+        const clientIp = getEffectiveClientIp(req, data.ip, auth, config);
+
         const sessId = db.createSession({
           user_identifier: data.user || 'usuario.anonimo',
           role: data.role || 'USUARIO',
-          ip_address: data.ip || req.socket.remoteAddress || '127.0.0.1',
+          ip_address: clientIp,
           login_portal: data.portal || '/auth/login',
           user_agent: req.headers['user-agent'] || 'WebClient'
         });
         return sendJson(res, 200, { success: true, sessionId: sessId });
       }
 
+      // -----------------------------------------------------------------------
       // POST /api/sessions/activity
+      // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sessions/activity') {
-        const data = await parseJsonBody(req);
+        const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
+        const riskLevel = (data.riskLevel || 'NORMAL').toUpperCase();
+
+        if (!ALLOWED_RISK_LEVELS.has(riskLevel)) {
+          return sendError(res, 400, `Nivel de riesgo inválido. Opciones válidas: ${Array.from(ALLOWED_RISK_LEVELS).join(', ')}`);
+        }
+
         db.recordActivity(
           data.sessionId,
           data.actionType || 'GENERIC_ACTION',
           data.endpoint || '/api',
           data.description || 'Acción ejecutada',
-          data.riskLevel || 'NORMAL'
+          riskLevel
         );
         return sendJson(res, 200, { success: true });
       }
 
+      // -----------------------------------------------------------------------
       // POST /api/sessions/logout
+      // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sessions/logout') {
-        const data = await parseJsonBody(req);
+        const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
         const ok = db.closeSession(data.sessionId);
         return sendJson(res, 200, { success: ok });
       }
 
+      // -----------------------------------------------------------------------
       // POST /api/sessions/simulate
+      // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sessions/simulate') {
         const roles = ['USUARIO_OPERADOR', 'ADMINISTRADOR_PRUEBAS', 'ANALISTA_DEMO'];
         const users = ['usuario_demo_01@test.local', 'operador_prueba@test.local', 'admin_demo@test.local'];

@@ -3,7 +3,7 @@
  * Parses WHATWG URL, manages CORS, dispatches API and Static requests
  */
 
-const { setCorsHeaders } = require('./respond');
+const { setCorsHeaders, setSecurityHeaders } = require('./respond');
 const { serveStatic } = require('../routes/static');
 
 function createRouter({ config, handleApi, publicDir }) {
@@ -13,6 +13,7 @@ function createRouter({ config, handleApi, publicDir }) {
     const pathname = parsedUrl.pathname;
     const origin = req.headers.origin;
 
+    setSecurityHeaders(res);
     setCorsHeaders(res, origin, config.CORS_ORIGINS);
 
     if (req.method === 'OPTIONS') {
@@ -20,7 +21,7 @@ function createRouter({ config, handleApi, publicDir }) {
       return res.end();
     }
 
-    if (pathname.startsWith('/api/')) {
+    if (pathname.startsWith('/api/') || pathname === '/healthz') {
       return handleApi(req, res, parsedUrl);
     }
 

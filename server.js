@@ -27,3 +27,13 @@ function handleShutdown() {
 
 process.on('SIGINT', handleShutdown);
 process.on('SIGTERM', handleShutdown);
+
+process.on('uncaughtException', (err) => {
+  console.error('[WebSentinel-CS FATAL] Excepción no capturada:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[WebSentinel-CS FATAL] Rechazo no controlado de promesa:', reason);
+  process.exit(1);
+});

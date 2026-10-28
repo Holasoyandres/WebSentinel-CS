@@ -6,6 +6,7 @@
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 function createDatabase(dbPath) {
   if (dbPath !== ':memory:') {
@@ -16,6 +17,16 @@ function createDatabase(dbPath) {
   }
 
   const db = new DatabaseSync(dbPath);
+
+  // Enable WAL and foreign keys if file-backed
+  try {
+    db.exec(`
+      PRAGMA foreign_keys = ON;
+      PRAGMA busy_timeout = 5000;
+    `);
+  } catch (_) {
+    // Memory DBs or some PRAGMAs might ignore
+  }
 
   // Initialize SQLite Schema
   db.exec(`
@@ -75,10 +86,49 @@ function createDatabase(dbPath) {
       FOREIGN KEY (session_id) REFERENCES user_sessions(session_id)
     );
 
+    -- Security Authentication & Access Control Tables (P0)
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      scopes TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_used_at DATETIME
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      salt TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'analyst',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      csrf_token TEXT NOT NULL,
+      expires_at DATETIME NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS admin_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      query TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      rows_returned INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE INDEX IF NOT EXISTS idx_incidents_timestamp ON incidents(timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_incidents_severity ON incidents(severity);
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_identifier);
     CREATE INDEX IF NOT EXISTS idx_activities_session ON session_activities(session_id);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
   `);
 
   return {
@@ -106,15 +156,16 @@ function createDatabase(dbPath) {
       }
     },
 
-    getIncidents(limit = 100, severity = 'ALL') {
+    getIncidents(limit = 100, severity = 'ALL', offset = 0) {
       try {
         const parsedLimit = Math.max(1, Math.min(500, parseInt(limit, 10) || 100));
+        const parsedOffset = Math.max(0, parseInt(offset, 10) || 0);
         if (severity === 'ALL') {
-          const stmt = db.prepare(`SELECT * FROM incidents ORDER BY timestamp DESC LIMIT ?`);
-          return stmt.all(parsedLimit);
+          const stmt = db.prepare(`SELECT * FROM incidents ORDER BY timestamp DESC LIMIT ? OFFSET ?`);
+          return stmt.all(parsedLimit, parsedOffset);
         } else {
-          const stmt = db.prepare(`SELECT * FROM incidents WHERE severity = ? ORDER BY timestamp DESC LIMIT ?`);
-          return stmt.all(severity, parsedLimit);
+          const stmt = db.prepare(`SELECT * FROM incidents WHERE severity = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`);
+          return stmt.all(severity, parsedLimit, parsedOffset);
         }
       } catch (err) {
         console.error('[DB Error] Failed to query incidents:', err.message);
@@ -142,7 +193,7 @@ function createDatabase(dbPath) {
 
     createSession(data) {
       try {
-        const sessionId = 'SESS-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substr(2, 4).toUpperCase();
+        const sessionId = 'SESS-' + crypto.randomUUID().toUpperCase();
         const loginTime = new Date().toISOString();
         const stmt = db.prepare(`
           INSERT INTO user_sessions (session_id, user_identifier, role, ip_address, login_portal, user_agent, status, login_time, logout_time, duration_minutes)
@@ -210,16 +261,17 @@ function createDatabase(dbPath) {
       }
     },
 
-    getUserSessions(limit = 50) {
+    getUserSessions(limit = 50, offset = 0) {
       try {
         const parsedLimit = Math.max(1, Math.min(500, parseInt(limit, 10) || 50));
+        const parsedOffset = Math.max(0, parseInt(offset, 10) || 0);
         const sessions = db.prepare(`
           SELECT s.*, 
             (SELECT COUNT(*) FROM session_activities WHERE session_id = s.session_id) as total_activities
           FROM user_sessions s
           ORDER BY s.login_time DESC
-          LIMIT ?
-        `).all(parsedLimit);
+          LIMIT ? OFFSET ?
+        `).all(parsedLimit, parsedOffset);
 
         return sessions;
       } catch (err) {
@@ -277,9 +329,96 @@ function createDatabase(dbPath) {
       }
     },
 
+    // --- Authentication & Audit Log Methods ---
+
+    findApiKeyByHash(keyHash) {
+      try {
+        return db.prepare(`SELECT * FROM api_keys WHERE key_hash = ?`).get(keyHash);
+      } catch (err) {
+        console.error('[DB Error] findApiKeyByHash:', err.message);
+        return null;
+      }
+    },
+
+    touchApiKey(id) {
+      try {
+        db.prepare(`UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+      } catch (_) {}
+    },
+
+    findUserByUsername(username) {
+      try {
+        return db.prepare(`SELECT * FROM users WHERE username = ?`).get(username);
+      } catch (err) {
+        console.error('[DB Error] findUserByUsername:', err.message);
+        return null;
+      }
+    },
+
+    findUserById(id) {
+      try {
+        return db.prepare(`SELECT id, username, role, created_at FROM users WHERE id = ?`).get(id);
+      } catch (err) {
+        console.error('[DB Error] findUserById:', err.message);
+        return null;
+      }
+    },
+
+    createAuthSession(userId, ttlHours = 8) {
+      try {
+        const sessionId = crypto.randomBytes(32).toString('hex');
+        const csrfToken = crypto.randomBytes(24).toString('hex');
+        const expiresAt = new Date(Date.now() + ttlHours * 3600 * 1000).toISOString();
+        db.prepare(`
+          INSERT INTO auth_sessions (id, user_id, csrf_token, expires_at)
+          VALUES (?, ?, ?, ?)
+        `).run(sessionId, userId, csrfToken, expiresAt);
+        return { sessionId, csrfToken, expiresAt };
+      } catch (err) {
+        console.error('[DB Error] createAuthSession:', err.message);
+        return null;
+      }
+    },
+
+    getAuthSession(sessionId) {
+      try {
+        const session = db.prepare(`
+          SELECT s.*, u.username, u.role
+          FROM auth_sessions s
+          JOIN users u ON u.id = s.user_id
+          WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP
+        `).get(sessionId);
+        return session || null;
+      } catch (err) {
+        console.error('[DB Error] getAuthSession:', err.message);
+        return null;
+      }
+    },
+
+    deleteAuthSession(sessionId) {
+      try {
+        db.prepare(`DELETE FROM auth_sessions WHERE id = ?`).run(sessionId);
+        return true;
+      } catch (err) {
+        console.error('[DB Error] deleteAuthSession:', err.message);
+        return false;
+      }
+    },
+
+    insertAuditLog({ userId, query, durationMs, rowsReturned }) {
+      try {
+        db.prepare(`
+          INSERT INTO admin_audit_log (user_id, query, duration_ms, rows_returned)
+          VALUES (?, ?, ?, ?)
+        `).run(userId, query, durationMs, rowsReturned);
+      } catch (err) {
+        console.error('[DB Error] insertAuditLog:', err.message);
+      }
+    },
+
     runReadOnlyQuery(sql) {
       const cleanSql = sql.trim();
-      if (!/^\s*SELECT\b/i.test(cleanSql) && !/^\s*WITH\b/i.test(cleanSql)) {
+      if (!/^\s*SELECT\b/i.test(cleanSql)) {
         throw new Error('Solo se permiten consultas SQL de lectura (SELECT)');
       }
       const stmt = db.prepare(cleanSql);

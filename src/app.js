@@ -25,7 +25,7 @@ function createApp({ config, db, publicDir }) {
     maxFailures: 5
   });
 
-  const handleApi = createApiHandler({ db, rateLimiter, stats });
+  const handleApi = createApiHandler({ config, db, rateLimiter, stats });
   const router = createRouter({ config, handleApi, publicDir: resolvedPublicDir });
 
   // Initial system telemetry event

@@ -9,9 +9,21 @@ const { startTestServer } = require('./helpers');
 
 describe('WebSentinel-CS :: Smoke Tests (FASE 0)', () => {
   let app;
+  let adminCookie;
+  let adminCsrfToken;
 
   before(async () => {
     app = await startTestServer();
+    const loginRes = await app.request('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'SmokeAdminPass123!' }
+    });
+    const setCookie = loginRes.headers['set-cookie'];
+    if (setCookie) {
+      const match = setCookie[0].match(/sentinel_session=([^;]+)/);
+      if (match) adminCookie = `sentinel_session=${match[1]}`;
+    }
+    adminCsrfToken = loginRes.json && loginRes.json.csrfToken;
   });
 
   after(async () => {
@@ -82,6 +94,7 @@ describe('WebSentinel-CS :: Smoke Tests (FASE 0)', () => {
     it('POST /api/sql/query should execute read-only SELECT query', async () => {
       const res = await app.request('/api/sql/query', {
         method: 'POST',
+        headers: { Cookie: adminCookie, 'X-CSRF-Token': adminCsrfToken },
         body: { query: 'SELECT severity, count(*) as count FROM incidents GROUP BY severity' }
       });
       assert.equal(res.status, 200);
@@ -92,11 +105,12 @@ describe('WebSentinel-CS :: Smoke Tests (FASE 0)', () => {
     it('POST /api/sql/query should reject non-SELECT statements', async () => {
       const res = await app.request('/api/sql/query', {
         method: 'POST',
+        headers: { Cookie: adminCookie, 'X-CSRF-Token': adminCsrfToken },
         body: { query: 'DROP TABLE incidents;' }
       });
       assert.equal(res.status, 400);
       assert.equal(res.json.success, false);
-      assert.match(res.json.error, /Solo se permiten consultas SQL de lectura/);
+      assert.match(res.json.message, /SELECT|lectura|palabra clave/i);
     });
   });
 
