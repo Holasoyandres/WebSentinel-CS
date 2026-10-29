@@ -1,9 +1,9 @@
 /**
  * WebSentinel-CS :: SQL Hardening & Execution Engine
- * Validates single SELECT or WITH (CTE), blocks credential tables, executes in worker thread
+ * Validates single SELECT or WITH (CTE), blocks credential tables, executes in isolated child process
  */
 
-const { Worker } = require('node:worker_threads');
+const { fork } = require('node:child_process');
 const path = require('node:path');
 
 const FORBIDDEN_SQL_KEYWORDS = [
@@ -73,7 +73,7 @@ function wrapQueryWithLimit(cleanQuery) {
 function executeQueryWithWorker(dbPath, cleanQuery, dbFallback = null, timeoutMs = 3000) {
   const wrapped = wrapQueryWithLimit(cleanQuery);
 
-  // If in-memory, worker thread would open a different empty DB, so execute via fallback with query_only and authorizer
+  // In-memory fallback if needed
   if (dbPath === ':memory:' && dbFallback) {
     return new Promise((resolve) => {
       try {
@@ -94,48 +94,77 @@ function executeQueryWithWorker(dbPath, cleanQuery, dbFallback = null, timeoutMs
   }
 
   return new Promise((resolve) => {
-    const worker = new Worker(path.join(__dirname, 'sql-worker.js'), {
-      workerData: { dbPath, query: wrapped }
+    let finished = false;
+    let timer = null;
+
+    const child = fork(path.join(__dirname, 'sql-process.js'), [], {
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc']
     });
 
-    let finished = false;
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
 
-    const timer = setTimeout(() => {
+    const killChild = () => {
+      try {
+        child.kill('SIGKILL');
+      } catch (_) {}
+    };
+
+    timer = setTimeout(() => {
       if (!finished) {
         finished = true;
-        worker.terminate().finally(() => {
+        cleanup();
+        killChild();
+        resolve({
+          success: false,
+          timeout: true,
+          error: `Tiempo límite de ejecución de consulta excedido (${timeoutMs / 1000}s)`
+        });
+      }
+    }, timeoutMs);
+
+    child.on('message', (msg) => {
+      if (!finished) {
+        finished = true;
+        cleanup();
+        killChild();
+        resolve(msg);
+      }
+    });
+
+    child.on('error', (err) => {
+      if (!finished) {
+        finished = true;
+        cleanup();
+        killChild();
+        resolve({ success: false, error: err.message });
+      }
+    });
+
+    child.on('exit', (code, signal) => {
+      if (!finished) {
+        finished = true;
+        cleanup();
+        if (signal === 'SIGKILL' || signal === 'SIGTERM') {
           resolve({
             success: false,
             timeout: true,
             error: `Tiempo límite de ejecución de consulta excedido (${timeoutMs / 1000}s)`
           });
-        });
-      }
-    }, timeoutMs);
-
-    worker.on('message', (msg) => {
-      if (!finished) {
-        finished = true;
-        clearTimeout(timer);
-        resolve(msg);
+        } else {
+          resolve({
+            success: false,
+            error: `El proceso de consulta terminó con código ${code ?? signal}`
+          });
+        }
       }
     });
 
-    worker.on('error', (err) => {
-      if (!finished) {
-        finished = true;
-        clearTimeout(timer);
-        resolve({ success: false, error: err.message });
-      }
-    });
-
-    worker.on('exit', (code) => {
-      if (!finished && code !== 0) {
-        finished = true;
-        clearTimeout(timer);
-        resolve({ success: false, error: `El proceso de consulta terminó inesperadamente con código ${code}` });
-      }
-    });
+    child.send({ dbPath, query: wrapped });
   });
 }
 

@@ -30,10 +30,37 @@ function createRestrictedBlockList() {
   bl.addSubnet('fc00::', 7, 'ipv6');           // Unique Local Address (ULA)
   bl.addSubnet('fe80::', 10, 'ipv6');          // Link-local
   bl.addSubnet('ff00::', 8, 'ipv6');           // Multicast
+  // NAT64, Documentation and Discard Prefixes
+  bl.addSubnet('64:ff9b::', 96, 'ipv6');
+  bl.addSubnet('64:ff9b:1::', 48, 'ipv6');
+  bl.addSubnet('2001:db8::', 32, 'ipv6');
+  bl.addSubnet('100::', 64, 'ipv6');
   return bl;
 }
 
 const RESTRICTED_BLOCKLIST = createRestrictedBlockList();
+
+function createLoopbackAndMetadataBlockList() {
+  const bl = new net.BlockList();
+  bl.addSubnet('127.0.0.0', 8, 'ipv4');
+  bl.addSubnet('169.254.0.0', 16, 'ipv4');
+  bl.addAddress('::1', 'ipv6');
+  bl.addSubnet('fe80::', 10, 'ipv6');
+  return bl;
+}
+
+const LOOPBACK_AND_METADATA_BLOCKLIST = createLoopbackAndMetadataBlockList();
+
+function isLoopbackOrMetadata(ip) {
+  const family = net.isIP(ip);
+  if (!family) return false;
+  const familyType = family === 6 ? 'ipv6' : 'ipv4';
+  try {
+    return LOOPBACK_AND_METADATA_BLOCKLIST.check(ip, familyType);
+  } catch (_) {
+    return false;
+  }
+}
 
 function parseAllowlist(allowlist = []) {
   const bl = new net.BlockList();
@@ -120,6 +147,19 @@ async function resolveAndValidateUrl(targetUrl, rawAllowlist = []) {
 
   for (const ip of resolvedIps) {
     const ipIsAllowed = isIpAllowed(ip, parsedAllow);
+
+    // Loopback & Metadata Protection:
+    // Even if the hostname is explicitly in SCAN_ALLOWLIST (e.g. 'localhost'),
+    // loopback (127.0.0.0/8, ::1) and metadata (169.254.0.0/16, fe80::/10) remain strictly blocked
+    // UNLESS that specific IP or range is also explicitly in SCAN_ALLOWLIST.
+    if (isLoopbackOrMetadata(ip)) {
+      if (!ipIsAllowed) {
+        return {
+          error: `SSRF bloqueado: Destino loopback/metadata (${ip}) no autorizado explícitamente en SCAN_ALLOWLIST`
+        };
+      }
+    }
+
     if (!hostIsExplicitlyAllowed && !ipIsAllowed) {
       if (isIpRestricted(ip)) {
         return {

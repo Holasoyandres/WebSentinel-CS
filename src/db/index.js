@@ -118,6 +118,7 @@ function createDatabase(dbPath) {
       identifier TEXT PRIMARY KEY,
       failures INTEGER DEFAULT 0,
       locked_until DATETIME,
+      alerted INTEGER DEFAULT 0,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -137,6 +138,10 @@ function createDatabase(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
     CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
   `);
+
+  try {
+    db.exec('ALTER TABLE login_rate_limits ADD COLUMN alerted INTEGER DEFAULT 0');
+  } catch (_) {}
 
   return {
     raw: db,
@@ -224,48 +229,54 @@ function createDatabase(dbPath) {
       }
     },
 
-    recordActivity(sessionId, actionType, endpoint, description, riskLevel = 'NORMAL') {
+    sessionExists(sessionId) {
+      if (!sessionId || typeof sessionId !== 'string') return false;
       try {
-        const stmt = db.prepare(`
-          INSERT INTO session_activities (session_id, timestamp, action_type, endpoint, description, risk_level)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `);
-        stmt.run(
-          sessionId,
-          new Date().toISOString(),
-          actionType,
-          endpoint,
-          description,
-          riskLevel
-        );
-      } catch (err) {
-        console.error('[DB Error] Failed to record activity:', err.message);
+        const row = db.prepare(`SELECT session_id FROM user_sessions WHERE session_id = ?`).get(sessionId);
+        return Boolean(row);
+      } catch (_) {
+        return false;
       }
     },
 
+    recordActivity(sessionId, actionType, endpoint, description, riskLevel = 'NORMAL') {
+      const stmt = db.prepare(`
+        INSERT INTO session_activities (session_id, timestamp, action_type, endpoint, description, risk_level)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run(
+        sessionId,
+        new Date().toISOString(),
+        actionType,
+        endpoint,
+        description,
+        riskLevel
+      );
+    },
+
     closeSession(sessionId) {
-      try {
-        const sess = db.prepare(`SELECT login_time FROM user_sessions WHERE session_id = ?`).get(sessionId);
-        const logoutTime = new Date().toISOString();
-        let durationMinutes = 1;
-        if (sess && sess.login_time) {
-          const diffMs = new Date(logoutTime) - new Date(sess.login_time);
-          durationMinutes = Math.max(1, Math.round(diffMs / 60000));
-        }
+      if (!sessionId || typeof sessionId !== 'string') return false;
+      const sess = db.prepare(`SELECT login_time FROM user_sessions WHERE session_id = ?`).get(sessionId);
+      if (!sess) return false;
 
-        const stmt = db.prepare(`
-          UPDATE user_sessions 
-          SET status = 'CERRADA', logout_time = ?, duration_minutes = ?
-          WHERE session_id = ?
-        `);
-        stmt.run(logoutTime, durationMinutes, sessionId);
-
-        this.recordActivity(sessionId, 'AUTH_LOGOUT', '/auth/logout', 'Cierre voluntario de sesión.', 'NORMAL');
-        return true;
-      } catch (err) {
-        console.error('[DB Error] Failed to close session:', err.message);
-        return false;
+      const logoutTime = new Date().toISOString();
+      let durationMinutes = 1;
+      if (sess.login_time) {
+        const diffMs = new Date(logoutTime) - new Date(sess.login_time);
+        durationMinutes = Math.max(1, Math.round(diffMs / 60000));
       }
+
+      const stmt = db.prepare(`
+        UPDATE user_sessions 
+        SET status = 'CERRADA', logout_time = ?, duration_minutes = ?
+        WHERE session_id = ?
+      `);
+      stmt.run(logoutTime, durationMinutes, sessionId);
+
+      try {
+        this.recordActivity(sessionId, 'AUTH_LOGOUT', '/auth/logout', 'Cierre voluntario de sesión.', 'NORMAL');
+      } catch (_) {}
+      return true;
     },
 
     getUserSessions(limit = 50, offset = 0) {
@@ -433,13 +444,32 @@ function createDatabase(dbPath) {
           const now = Date.now();
           if (lockTime > now) {
             const retryAfterSec = Math.max(1, Math.ceil((lockTime - now) / 1000));
-            return { isLocked: true, retryAfterSec, failures: row.failures };
+            return { isLocked: true, retryAfterSec, failures: row.failures, alerted: Boolean(row.alerted) };
           }
         }
-        return { isLocked: false, retryAfterSec: 0, failures: row ? row.failures : 0 };
+        return { isLocked: false, retryAfterSec: 0, failures: row ? row.failures : 0, alerted: Boolean(row ? row.alerted : 0) };
       } catch (err) {
         console.error('[DB Error] checkLoginRateLimit:', err.message);
-        return { isLocked: false, retryAfterSec: 0, failures: 0 };
+        return { isLocked: false, retryAfterSec: 0, failures: 0, alerted: false };
+      }
+    },
+
+    incrementBlockedAttempts(identifier) {
+      try {
+        db.prepare(`
+          UPDATE login_rate_limits
+          SET failures = failures + 1, updated_at = CURRENT_TIMESTAMP
+          WHERE identifier = ?
+        `).run(identifier);
+      } catch (_) {}
+    },
+
+    getUserLoginFailures(identifier) {
+      try {
+        const row = db.prepare(`SELECT failures FROM login_rate_limits WHERE identifier = ?`).get(identifier);
+        return row ? (row.failures || 0) : 0;
+      } catch (_) {
+        return 0;
       }
     },
 
@@ -450,26 +480,36 @@ function createDatabase(dbPath) {
         let lockedUntil = null;
         let isLocked = false;
         let retryAfterSec = 0;
+        let shouldAlert = false;
+        let alerted = row ? (row.alerted || 0) : 0;
 
-        if (currentFailures >= maxFailures) {
+        // Hard lock ONLY applies to IP identifiers ('ip:...')
+        const isIp = identifier.startsWith('ip:');
+
+        if (isIp && currentFailures >= maxFailures) {
           isLocked = true;
           retryAfterSec = lockMinutes * 60;
           lockedUntil = new Date(Date.now() + lockMinutes * 60 * 1000).toISOString();
+          if (!alerted) {
+            shouldAlert = true;
+            alerted = 1;
+          }
         }
 
         db.prepare(`
-          INSERT INTO login_rate_limits (identifier, failures, locked_until, updated_at)
-          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+          INSERT INTO login_rate_limits (identifier, failures, locked_until, alerted, updated_at)
+          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
           ON CONFLICT(identifier) DO UPDATE SET
             failures = ?,
             locked_until = ?,
+            alerted = ?,
             updated_at = CURRENT_TIMESTAMP
-        `).run(identifier, currentFailures, lockedUntil, currentFailures, lockedUntil);
+        `).run(identifier, currentFailures, lockedUntil, alerted, currentFailures, lockedUntil, alerted);
 
-        return { isLocked, failures: currentFailures, retryAfterSec };
+        return { isLocked, failures: currentFailures, retryAfterSec, shouldAlert };
       } catch (err) {
         console.error('[DB Error] recordLoginFailure:', err.message);
-        return { isLocked: false, failures: 1, retryAfterSec: 0 };
+        return { isLocked: false, failures: 1, retryAfterSec: 0, shouldAlert: false };
       }
     },
 

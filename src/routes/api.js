@@ -27,6 +27,7 @@ function getEffectiveClientIp(req, bodyIp, auth, config) {
 }
 
 function createApiHandler({ config, db, rateLimiter, stats }) {
+  const activeSqlQueriesByUser = new Set();
   function logEvent(type, severity, sourceIp, target, ruleId, details, action = 'LOGGED') {
     const sev = ALLOWED_SEVERITY.has(severity) ? severity : 'INFO';
     const act = ALLOWED_ACTIONS.has(action) ? action : 'LOGGED';
@@ -85,27 +86,35 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
           return sendError(res, 400, 'Longitud de credenciales fuera de rango permitido');
         }
 
-        // Rate Limiting by IP and Username (5 failures / 15 minutes)
-        const clientIp = req.socket.remoteAddress || '127.0.0.1';
+        // Client IP extraction (respecting TRUST_PROXIES)
+        let clientIp = req.socket.remoteAddress || '127.0.0.1';
+        if (config.TRUST_PROXIES || process.env.TRUST_PROXIES === 'true') {
+          const xff = req.headers['x-forwarded-for'];
+          if (xff && typeof xff === 'string') {
+            const parts = xff.split(',').map(s => s.trim()).filter(Boolean);
+            if (parts.length > 0) {
+              clientIp = parts[parts.length - 1];
+            }
+          }
+        }
+
         const ipKey = `ip:${clientIp}`;
         const userKey = `user:${cleanUsername.toLowerCase()}`;
 
+        // Hard Rate Limiting ONLY by IP (prevents user lockout DoS)
         const ipLimit = db.checkLoginRateLimit(ipKey);
-        const userLimit = db.checkLoginRateLimit(userKey);
+        if (ipLimit.isLocked) {
+          db.incrementBlockedAttempts(ipKey);
+          res.setHeader('Retry-After', String(ipLimit.retryAfterSec));
+          return sendError(res, 429, 'Demasiados intentos fallidos de autenticación desde esta IP. Intente más tarde.');
+        }
 
-        if (ipLimit.isLocked || userLimit.isLocked) {
-          const retrySec = Math.max(ipLimit.retryAfterSec || 0, userLimit.retryAfterSec || 0);
-          logEvent(
-            'AUTH_BRUTEFORCE',
-            'CRITICAL',
-            clientIp,
-            '/api/auth/login',
-            'RULE-RATE-001',
-            `Intento de fuerza bruta mitigado para usuario '${cleanUsername}'. IP bloqueada por ${retrySec}s.`,
-            'IP_BLOCKED'
-          );
-          res.setHeader('Retry-After', String(retrySec));
-          return sendError(res, 429, 'Demasiados intentos fallidos de autenticación. Intente más tarde.');
+        // Progressive Delay by Username (prevents brute force while never completely locking legitimate user)
+        const userFailures = db.getUserLoginFailures(userKey);
+        if (userFailures > 0) {
+          const baseUnit = (config.ENV === 'test' || process.env.NODE_ENV === 'test') ? 20 : 1000;
+          const delayMs = Math.min(30000, Math.pow(2, Math.min(userFailures - 1, 5)) * baseUnit);
+          await new Promise(r => setTimeout(r, delayMs));
         }
 
         // Timing Attack Mitigation: Equalize CPU work with dummy scrypt
@@ -120,19 +129,25 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
 
         if (!isValid) {
           const ipFail = db.recordLoginFailure(ipKey, 5, 15);
-          const userFail = db.recordLoginFailure(userKey, 5, 15);
+          db.recordLoginFailure(userKey, 999999, 0); // Increment progressive user failure counter without hard lock
 
-          if (ipFail.isLocked || userFail.isLocked) {
+          if (ipFail.shouldAlert) {
             logEvent(
               'AUTH_BRUTEFORCE',
               'CRITICAL',
               clientIp,
               '/api/auth/login',
               'RULE-RATE-001',
-              `Umbral de 5 fallos alcanzado para '${cleanUsername}'. Enfriamiento forzado por 15 minutos.`,
+              `Umbral de 5 fallos alcanzado para IP '${clientIp}'. Enfriamiento forzado por 15 minutos.`,
               'IP_BLOCKED'
             );
           }
+
+          if (ipFail.isLocked && ipFail.failures > 5) {
+            res.setHeader('Retry-After', String(ipFail.retryAfterSec));
+            return sendError(res, 429, 'Demasiados intentos fallidos de autenticación desde esta IP. Intente más tarde.');
+          }
+
           return sendError(res, 401, 'Credenciales de acceso no válidas');
         }
 
@@ -265,34 +280,43 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
           return sendError(res, 400, valErr.message);
         }
 
-        const startTime = Date.now();
-        const execResult = await executeQueryWithWorker(config.DB_PATH, cleanQuery, db, 3000);
-        const durationMs = Date.now() - startTime;
-
         const userId = (auth.user && auth.user.id) || 'usr-admin';
-        const rowsCount = execResult.rows ? execResult.rows.length : 0;
-
-        db.insertAuditLog({
-          userId,
-          query: cleanQuery,
-          durationMs,
-          rowsReturned: rowsCount
-        });
-
-        if (execResult.timeout) {
-          return sendError(res, 408, execResult.error);
+        if (activeSqlQueriesByUser.has(userId)) {
+          return sendError(res, 429, 'Ya existe una consulta SQL concurrente en ejecución para este usuario');
         }
+        activeSqlQueriesByUser.add(userId);
 
-        if (!execResult.success) {
-          return sendError(res, 400, execResult.error);
+        try {
+          const startTime = Date.now();
+          const execResult = await executeQueryWithWorker(config.DB_PATH, cleanQuery, db, 3000);
+          const durationMs = Date.now() - startTime;
+
+          const rowsCount = execResult.rows ? execResult.rows.length : 0;
+
+          db.insertAuditLog({
+            userId,
+            query: cleanQuery,
+            durationMs,
+            rowsReturned: rowsCount
+          });
+
+          if (execResult.timeout) {
+            return sendError(res, 408, execResult.error);
+          }
+
+          if (!execResult.success) {
+            return sendError(res, 400, execResult.error);
+          }
+
+          return sendJson(res, 200, {
+            success: true,
+            count: execResult.rows.length,
+            durationMs,
+            rows: execResult.rows
+          });
+        } finally {
+          activeSqlQueriesByUser.delete(userId);
         }
-
-        return sendJson(res, 200, {
-          success: true,
-          count: execResult.rows.length,
-          durationMs,
-          rows: execResult.rows
-        });
       }
 
       // -----------------------------------------------------------------------
@@ -520,8 +544,11 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/sessions/activities') {
         const sessionId = parsedUrl.searchParams.get('sessionId');
-        if (!sessionId) {
-          return sendError(res, 400, 'sessionId requerido');
+        if (!sessionId || typeof sessionId !== 'string' || !sessionId.trim()) {
+          return sendError(res, 400, 'sessionId requerido y debe ser una cadena válida');
+        }
+        if (!db.sessionExists(sessionId)) {
+          return sendError(res, 404, 'Sesión no encontrada');
         }
         const activities = db.getSessionActivities(sessionId);
         return sendJson(res, 200, activities);
@@ -541,6 +568,9 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
           login_portal: data.portal || '/auth/login',
           user_agent: req.headers['user-agent'] || 'WebClient'
         });
+        if (!sessId) {
+          return sendError(res, 500, 'Error al inicializar la sesión');
+        }
         return sendJson(res, 200, { success: true, sessionId: sessId });
       }
 
@@ -549,10 +579,24 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sessions/activity') {
         const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
-        const riskLevel = (data.riskLevel || 'NORMAL').toUpperCase();
+        if (!data || typeof data.sessionId !== 'string' || !data.sessionId.trim()) {
+          return sendError(res, 400, 'sessionId requerido y debe ser una cadena de texto no vacía');
+        }
 
+        const riskLevel = (data.riskLevel || 'NORMAL').toUpperCase();
         if (!ALLOWED_RISK_LEVELS.has(riskLevel)) {
           return sendError(res, 400, `Nivel de riesgo inválido. Opciones válidas: ${Array.from(ALLOWED_RISK_LEVELS).join(', ')}`);
+        }
+
+        if (data.actionType && typeof data.actionType !== 'string') {
+          return sendError(res, 400, 'actionType debe ser una cadena de texto');
+        }
+        if (data.endpoint && typeof data.endpoint !== 'string') {
+          return sendError(res, 400, 'endpoint debe ser una cadena de texto');
+        }
+
+        if (!db.sessionExists(data.sessionId)) {
+          return sendError(res, 404, 'Sesión no encontrada');
         }
 
         db.recordActivity(
@@ -570,8 +614,14 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sessions/logout') {
         const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
+        if (!data || typeof data.sessionId !== 'string' || !data.sessionId.trim()) {
+          return sendError(res, 400, 'sessionId requerido y debe ser una cadena de texto no vacía');
+        }
         const ok = db.closeSession(data.sessionId);
-        return sendJson(res, 200, { success: ok });
+        if (!ok) {
+          return sendError(res, 404, 'Sesión no encontrada o ya cerrada');
+        }
+        return sendJson(res, 200, { success: true });
       }
 
       // -----------------------------------------------------------------------
