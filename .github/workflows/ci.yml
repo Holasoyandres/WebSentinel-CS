@@ -1,0 +1,54 @@
+name: WebSentinel-CS Continuous Integration
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-engine:
+    name: Node.js Engine Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x, 24.x]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Verify zero runtime dependencies footprint
+        run: |
+          echo "Verificando huella cero de dependencias de terceros..."
+          node -e "const pkg = require('./package.json'); if (pkg.dependencies && Object.keys(pkg.dependencies).length > 0) { console.error('Error: WebSentinel-CS exige 0 dependencias npm en runtime.'); process.exit(1); } console.log('✓ Cero dependencias npm en runtime confirmado.');"
+
+      - name: Run Native Test Suite (node --test)
+        run: node --test
+
+  test-laravel-integration:
+    name: Laravel Integration Package Tests (PHP)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php-version: ['8.2', '8.3']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php-version }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: mbstring, json, curl, openssl
+
+      - name: Run Laravel Integration Tests
+        run: |
+          cd integrations/laravel
+          php tests/run.php

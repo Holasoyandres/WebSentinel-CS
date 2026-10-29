@@ -97,18 +97,81 @@ function createDatabase(dbPath) {
       );
     },
 
-    getIncidents(limit = 100, severity = 'ALL', offset = 0, includeSimulated = false) {
-      const parsedLimit = Math.max(1, Math.min(500, parseInt(limit, 10) || 100));
-      const parsedOffset = Math.max(0, parseInt(offset, 10) || 0);
-      const simClause = includeSimulated ? '' : 'AND (is_simulated IS NULL OR is_simulated = 0)';
+    getIncidents(limit = 100, severity = 'ALL', offset = 0, includeSimulated = false, from = null, to = null, search = null) {
+      let opt = typeof limit === 'object' && limit !== null ? limit : {
+        limit, severity, offset, includeSimulated, from, to, search
+      };
+      const parsedLimit = Math.max(1, Math.min(500, parseInt(opt.limit, 10) || 100));
+      const parsedOffset = Math.max(0, parseInt(opt.offset, 10) || 0);
 
-      if (severity === 'ALL') {
-        const sql = `SELECT * FROM incidents WHERE 1=1 ${simClause} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
-        return db.prepare(sql).all(parsedLimit, parsedOffset);
-      } else {
-        const sql = `SELECT * FROM incidents WHERE severity = ? ${simClause} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
-        return db.prepare(sql).all(severity, parsedLimit, parsedOffset);
+      const conditions = [];
+      const params = [];
+
+      if (!opt.includeSimulated) {
+        conditions.push('(is_simulated IS NULL OR is_simulated = 0)');
       }
+
+      if (opt.severity && opt.severity !== 'ALL') {
+        conditions.push('severity = ?');
+        params.push(opt.severity);
+      }
+
+      if (opt.from) {
+        conditions.push('timestamp >= ?');
+        params.push(opt.from);
+      }
+
+      if (opt.to) {
+        conditions.push('timestamp <= ?');
+        params.push(opt.to);
+      }
+
+      if (opt.search && typeof opt.search === 'string' && opt.search.trim().length > 0) {
+        const term = `%${opt.search.trim()}%`;
+        conditions.push('(source_ip LIKE ? OR rule_id LIKE ? OR target LIKE ? OR details LIKE ?)');
+        params.push(term, term, term, term);
+      }
+
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const sql = `SELECT * FROM incidents ${whereClause} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+      params.push(parsedLimit, parsedOffset);
+
+      return db.prepare(sql).all(...params);
+    },
+
+    getIncidentsCount(severity = 'ALL', includeSimulated = false, from = null, to = null, search = null) {
+      const conditions = [];
+      const params = [];
+
+      if (!includeSimulated) {
+        conditions.push('(is_simulated IS NULL OR is_simulated = 0)');
+      }
+
+      if (severity && severity !== 'ALL') {
+        conditions.push('severity = ?');
+        params.push(severity);
+      }
+
+      if (from) {
+        conditions.push('timestamp >= ?');
+        params.push(from);
+      }
+
+      if (to) {
+        conditions.push('timestamp <= ?');
+        params.push(to);
+      }
+
+      if (search && typeof search === 'string' && search.trim().length > 0) {
+        const term = `%${search.trim()}%`;
+        conditions.push('(source_ip LIKE ? OR rule_id LIKE ? OR target LIKE ? OR details LIKE ?)');
+        params.push(term, term, term, term);
+      }
+
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const sql = `SELECT COUNT(*) as total FROM incidents ${whereClause}`;
+      const row = db.prepare(sql).get(...params);
+      return row ? row.total : 0;
     },
 
     verifyIncidentLogIntegrity() {
@@ -393,6 +456,59 @@ function createDatabase(dbPath) {
       try {
         getPrepared(`UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`).run(keyId);
       } catch (_) {}
+    },
+
+    getAllApiKeys() {
+      return db.prepare(`SELECT id, name, scopes, created_at, last_used_at FROM api_keys ORDER BY created_at DESC`).all();
+    },
+
+    createApiKey(id, name, keyHash, scopes) {
+      return getPrepared(`
+        INSERT INTO api_keys (id, name, key_hash, scopes, created_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(id, name, keyHash, scopes);
+    },
+
+    deleteApiKey(id) {
+      return getPrepared(`DELETE FROM api_keys WHERE id = ?`).run(id);
+    },
+
+    getBlockedIps() {
+      const rows = db.prepare(`
+        SELECT ip, failed_attempts, block_expires_at, last_seen
+        FROM ip_reputation
+        WHERE block_expires_at IS NOT NULL AND block_expires_at > CURRENT_TIMESTAMP
+        ORDER BY block_expires_at DESC
+      `).all();
+
+      const now = Date.now();
+      return rows.map(r => {
+        const expiresMs = new Date(r.block_expires_at).getTime();
+        const remainingSeconds = Math.max(0, Math.ceil((expiresMs - now) / 1000));
+        return {
+          ip: r.ip,
+          failedAttempts: r.failed_attempts,
+          blockExpiresAt: r.block_expires_at,
+          lastSeen: r.last_seen,
+          remainingSeconds
+        };
+      });
+    },
+
+    unblockIp(ip) {
+      // 1. Clear ip_reputation
+      getPrepared(`
+        UPDATE ip_reputation
+        SET block_expires_at = NULL, failed_attempts = 0, updated_at = CURRENT_TIMESTAMP
+        WHERE ip = ?
+      `).run(ip);
+
+      // 2. Clear login_rate_limits
+      try {
+        getPrepared(`DELETE FROM login_rate_limits WHERE identifier = ? OR identifier = ?`).run(`ip:${ip}`, ip);
+      } catch (_) {}
+
+      return true;
     },
 
     // -------------------------------------------------------------------------

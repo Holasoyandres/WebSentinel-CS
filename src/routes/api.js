@@ -37,8 +37,32 @@ function getEffectiveClientIp(req, bodyIp, auth, config) {
   return req.socket.remoteAddress || '127.0.0.1';
 }
 
+function sanitizeCsvCell(val) {
+  if (val === null || val === undefined) return '';
+  let str = String(val);
+  // Prepend single quote if cell starts with formula trigger (=, +, -, @, \t, \r)
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = "'" + str;
+  }
+  return str.replace(/"/g, '""');
+}
+
 function createApiHandler({ config, db, rateLimiter, stats }) {
   const activeSqlQueriesByUser = new Set();
+  const sseClients = new Set();
+
+  // Heartbeat ping every 15s to keep connections alive through proxies
+  const ssePingInterval = setInterval(() => {
+    if (sseClients.size === 0) return;
+    for (const client of sseClients) {
+      try {
+        client.write(': ping\n\n');
+      } catch (_) {
+        sseClients.delete(client);
+      }
+    }
+  }, 15000);
+  if (ssePingInterval.unref) ssePingInterval.unref();
 
   function logEvent(type, severity, sourceIp, target, ruleId, details, action = 'LOGGED', isSimulated = false) {
     const sev = ALLOWED_SEVERITY.has(severity) ? severity : 'INFO';
@@ -62,6 +86,19 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
     if (!isSimulated && (sev === 'CRITICAL' || sev === 'HIGH')) {
       stats.threatsDetected++;
     }
+
+    // Broadcast in real-time to active SSE clients
+    if (sseClients.size > 0) {
+      const sseMsg = `event: incident\ndata: ${JSON.stringify(event)}\n\n`;
+      for (const client of sseClients) {
+        try {
+          client.write(sseMsg);
+        } catch (_) {
+          sseClients.delete(client);
+        }
+      }
+    }
+
     return event;
   }
 
@@ -293,19 +330,46 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // GET /api/events (Segregates Simulated Data by Default)
+      // GET /api/events (Search, Pagination, Date Filtering & Segregation)
       // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/events') {
         const severity = parsedUrl.searchParams.get('severity') || 'ALL';
         const limitParam = parsedUrl.searchParams.get('limit') || '100';
         const offsetParam = parsedUrl.searchParams.get('offset') || '0';
         const includeSimulated = parsedUrl.searchParams.get('includeSimulated') === 'true';
+        const from = parsedUrl.searchParams.get('from');
+        const to = parsedUrl.searchParams.get('to');
+        const search = parsedUrl.searchParams.get('search');
 
         const limit = Math.min(Math.max(1, parseInt(limitParam, 10) || 100), 500);
         const offset = Math.max(0, parseInt(offsetParam, 10) || 0);
 
-        const rows = db.getIncidents(limit, severity, offset, includeSimulated);
+        const rows = db.getIncidents({ limit, severity, offset, includeSimulated, from, to, search });
+        const total = db.getIncidentsCount ? db.getIncidentsCount(severity, includeSimulated, from, to, search) : rows.length;
+
+        res.setHeader('X-Total-Count', String(total));
         return sendJson(res, 200, rows);
+      }
+
+      // -----------------------------------------------------------------------
+      // Real-Time SSE Stream: GET /api/v1/stream
+      // -----------------------------------------------------------------------
+      if (method === 'GET' && pathname === '/api/v1/stream') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+          'Access-Control-Allow-Origin': req.headers.origin || '*'
+        });
+
+        res.write(`event: connected\ndata: ${JSON.stringify({ time: new Date().toISOString(), status: 'STREAM_CONNECTED' })}\n\n`);
+
+        sseClients.add(res);
+        req.on('close', () => {
+          sseClients.delete(res);
+        });
+        return;
       }
 
       // -----------------------------------------------------------------------
@@ -377,11 +441,16 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // GET /api/export-csv
+      // GET /api/export-csv (Formula Injection Sanitized & Date Filtered)
       // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/export-csv') {
         const includeSimulated = parsedUrl.searchParams.get('includeSimulated') === 'true';
-        const rows = db.getIncidents(500, 'ALL', 0, includeSimulated);
+        const from = parsedUrl.searchParams.get('from');
+        const to = parsedUrl.searchParams.get('to');
+        const severity = parsedUrl.searchParams.get('severity') || 'ALL';
+        const search = parsedUrl.searchParams.get('search');
+
+        const rows = db.getIncidents({ limit: 5000, severity, offset: 0, includeSimulated, from, to, search });
 
         const userId = (auth.user && auth.user.id) || 'usr-analyst';
         const clientIp = req.socket.remoteAddress || '127.0.0.1';
@@ -389,14 +458,13 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
           action: 'EXPORT_CSV',
           userId,
           ip: clientIp,
-          details: `Exportación de ${rows.length} eventos (includeSimulated=${includeSimulated})`,
+          details: `Exportación de ${rows.length} eventos (includeSimulated=${includeSimulated}, from=${from || '*'}, to=${to || '*'})`,
           rowsReturned: rows.length
         });
 
         let csv = 'ID,TIMESTAMP,SEVERITY,TYPE,RULE_ID,SOURCE_IP,TARGET,ACTION,IS_SIMULATED,DETAILS\n';
         for (const ev of rows) {
-          const cleanDetails = (ev.details || '').replace(/"/g, '""');
-          csv += `"${ev.id}","${ev.timestamp}","${ev.severity}","${ev.type}","${ev.rule_id}","${ev.source_ip}","${ev.target}","${ev.action}",${ev.is_simulated || 0},"${cleanDetails}"\n`;
+          csv += `"${sanitizeCsvCell(ev.id)}","${sanitizeCsvCell(ev.timestamp)}","${sanitizeCsvCell(ev.severity)}","${sanitizeCsvCell(ev.type)}","${sanitizeCsvCell(ev.rule_id)}","${sanitizeCsvCell(ev.source_ip)}","${sanitizeCsvCell(ev.target)}","${sanitizeCsvCell(ev.action)}",${ev.is_simulated || 0},"${sanitizeCsvCell(ev.details)}"\n`;
         }
         return sendCsv(res, 'websentinel-audit-events.csv', csv);
       }
@@ -661,6 +729,119 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
 
         const report = db.verifyIncidentLogIntegrity();
         return sendJson(res, 200, report);
+      }
+
+      // -----------------------------------------------------------------------
+      // Admin: GET /api/v1/admin/api-keys
+      // -----------------------------------------------------------------------
+      if (method === 'GET' && pathname === '/api/v1/admin/api-keys') {
+        const userRole = (auth.user && auth.user.role) || auth.role;
+        if (userRole !== 'admin') {
+          return sendError(res, 403, 'Acceso denegado: Requiere rol de administrador');
+        }
+        const keys = db.getAllApiKeys();
+        return sendJson(res, 200, keys);
+      }
+
+      // -----------------------------------------------------------------------
+      // Admin: POST /api/v1/admin/api-keys
+      // -----------------------------------------------------------------------
+      if (method === 'POST' && pathname === '/api/v1/admin/api-keys') {
+        const userRole = (auth.user && auth.user.role) || auth.role;
+        if (userRole !== 'admin') {
+          return sendError(res, 403, 'Acceso denegado: Requiere rol de administrador');
+        }
+
+        const body = await parseJsonBody(req, config.MAX_BODY_BYTES);
+        const name = (body.name || '').trim();
+        const scopes = (body.scopes || 'read').trim();
+
+        if (!name || name.length > 64) {
+          return sendError(res, 400, 'El nombre de la clave es obligatorio (máximo 64 caracteres)');
+        }
+
+        const rawKey = 'ws_live_' + crypto.randomBytes(16).toString('hex');
+        const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+        const id = 'key-' + crypto.randomUUID();
+
+        db.createApiKey(id, name, keyHash, scopes);
+
+        db.insertAuditLog({
+          action: 'CREATE_API_KEY',
+          userId: auth.user ? auth.user.id : 'usr-admin',
+          ip: req.socket.remoteAddress || '127.0.0.1',
+          details: `Creación de API key "${name}" con scopes [${scopes}]`
+        });
+
+        return sendJson(res, 201, {
+          success: true,
+          id,
+          name,
+          scopes,
+          key: rawKey
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // Admin: DELETE /api/v1/admin/api-keys/:id
+      // -----------------------------------------------------------------------
+      if (method === 'DELETE' && pathname.startsWith('/api/v1/admin/api-keys/')) {
+        const userRole = (auth.user && auth.user.role) || auth.role;
+        if (userRole !== 'admin') {
+          return sendError(res, 403, 'Acceso denegado: Requiere rol de administrador');
+        }
+
+        const keyId = pathname.substring('/api/v1/admin/api-keys/'.length);
+        db.deleteApiKey(keyId);
+
+        db.insertAuditLog({
+          action: 'REVOKE_API_KEY',
+          userId: auth.user ? auth.user.id : 'usr-admin',
+          ip: req.socket.remoteAddress || '127.0.0.1',
+          details: `Revocación de API key ${keyId}`
+        });
+
+        return sendJson(res, 200, { success: true });
+      }
+
+      // -----------------------------------------------------------------------
+      // Admin: GET /api/v1/admin/blocked-ips
+      // -----------------------------------------------------------------------
+      if (method === 'GET' && pathname === '/api/v1/admin/blocked-ips') {
+        const userRole = (auth.user && auth.user.role) || auth.role;
+        if (userRole !== 'admin') {
+          return sendError(res, 403, 'Acceso denegado: Requiere rol de administrador');
+        }
+
+        const blocked = db.getBlockedIps();
+        return sendJson(res, 200, blocked);
+      }
+
+      // -----------------------------------------------------------------------
+      // Admin: POST /api/v1/admin/unblock-ip
+      // -----------------------------------------------------------------------
+      if (method === 'POST' && pathname === '/api/v1/admin/unblock-ip') {
+        const userRole = (auth.user && auth.user.role) || auth.role;
+        if (userRole !== 'admin') {
+          return sendError(res, 403, 'Acceso denegado: Requiere rol de administrador');
+        }
+
+        const body = await parseJsonBody(req, config.MAX_BODY_BYTES);
+        const ip = (body.ip || '').trim();
+        if (!ip) {
+          return sendError(res, 400, 'Dirección IP requerida');
+        }
+
+        db.unblockIp(ip);
+
+        db.insertAuditLog({
+          action: 'UNBLOCK_IP',
+          userId: auth.user ? auth.user.id : 'usr-admin',
+          ip: req.socket.remoteAddress || '127.0.0.1',
+          details: `Desbloqueo manual de IP ${ip}`
+        });
+
+        return sendJson(res, 200, { success: true, ip });
       }
 
       // -----------------------------------------------------------------------

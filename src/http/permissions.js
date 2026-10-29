@@ -19,7 +19,8 @@ const SCOPE_PERMISSIONS = {
     'GET:/api/sql/summary',
     'GET:/api/sessions',
     'GET:/api/sessions/activities',
-    'GET:/api/v1/ip/:ip/status'
+    'GET:/api/v1/ip/:ip/status',
+    'GET:/api/v1/stream'
   ])
 };
 
@@ -32,6 +33,7 @@ const ROLE_PERMISSIONS = {
     'GET:/api/sessions/activities',
     'GET:/api/auth/me',
     'GET:/api/v1/ip/:ip/status',
+    'GET:/api/v1/stream',
     'POST:/api/auth/logout'
   ]),
   analyst: new Set([
@@ -42,6 +44,7 @@ const ROLE_PERMISSIONS = {
     'GET:/api/sessions/activities',
     'GET:/api/auth/me',
     'GET:/api/v1/ip/:ip/status',
+    'GET:/api/v1/stream',
     'POST:/api/auth/logout',
     'POST:/api/scan',
     'GET:/api/export-csv',
@@ -58,6 +61,9 @@ const ROLE_PERMISSIONS = {
 function normalizePath(pathname) {
   if (pathname.startsWith('/api/v1/ip/') && pathname.endsWith('/status')) {
     return '/api/v1/ip/:ip/status';
+  }
+  if (pathname.startsWith('/api/v1/admin/api-keys/')) {
+    return '/api/v1/admin/api-keys/:id';
   }
   return pathname;
 }
