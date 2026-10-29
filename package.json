@@ -9,7 +9,9 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "backup": "node scripts/backup.js",
+    "purge": "node scripts/purge.js"
   },
   "keywords": [
     "cybersecurity",

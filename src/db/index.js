@@ -1,12 +1,15 @@
 /**
  * WebSentinel-CS :: Database Engine
  * Native SQLite storage using Node.js DatabaseSync
+ * Features: WAL mode, foreign keys, versioned migrations, statement cache,
+ * cryptographic hash chaining, persistent IP reputation, and automated hot backups.
  */
 
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { runMigrations } = require('./migrator');
 
 function createDatabase(dbPath) {
   if (dbPath !== ':memory:') {
@@ -18,231 +21,310 @@ function createDatabase(dbPath) {
 
   const db = new DatabaseSync(dbPath);
 
-  // Enable WAL and foreign keys if file-backed
+  // WAL, busy timeout, foreign keys and synchronous hardening
   try {
     db.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
       PRAGMA foreign_keys = ON;
       PRAGMA busy_timeout = 5000;
     `);
   } catch (_) {
-    // Memory DBs or some PRAGMAs might ignore
+    // In-memory databases or restricted environments may ignore some PRAGMAs
   }
 
-  // Initialize SQLite Schema
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS incidents (
-      id TEXT PRIMARY KEY,
-      timestamp DATETIME NOT NULL,
-      severity TEXT NOT NULL,
-      type TEXT NOT NULL,
-      rule_id TEXT NOT NULL,
-      source_ip TEXT NOT NULL,
-      target TEXT NOT NULL,
-      action TEXT NOT NULL,
-      details TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
+  // Execute versioned migrations to ensure zero data loss on schema updates
+  runMigrations(db);
 
-    CREATE TABLE IF NOT EXISTS ip_reputation (
-      ip TEXT PRIMARY KEY,
-      failed_attempts INTEGER DEFAULT 0,
-      is_blocked INTEGER DEFAULT 0,
-      block_expires_at DATETIME,
-      first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-      last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS endpoint_scans (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      target_url TEXT NOT NULL,
-      status_code INTEGER,
-      security_score INTEGER,
-      missing_headers_count INTEGER,
-      latency_ms INTEGER,
-      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS user_sessions (
-      session_id TEXT PRIMARY KEY,
-      user_identifier TEXT NOT NULL,
-      role TEXT DEFAULT 'USUARIO',
-      ip_address TEXT NOT NULL,
-      login_portal TEXT NOT NULL,
-      user_agent TEXT,
-      status TEXT DEFAULT 'ACTIVA',
-      login_time DATETIME NOT NULL,
-      logout_time DATETIME,
-      duration_minutes INTEGER DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS session_activities (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL,
-      timestamp DATETIME NOT NULL,
-      action_type TEXT NOT NULL,
-      endpoint TEXT NOT NULL,
-      description TEXT NOT NULL,
-      risk_level TEXT DEFAULT 'NORMAL',
-      FOREIGN KEY (session_id) REFERENCES user_sessions(session_id)
-    );
-
-    -- Security Authentication & Access Control Tables (P0)
-    CREATE TABLE IF NOT EXISTS api_keys (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      key_hash TEXT NOT NULL UNIQUE,
-      scopes TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      last_used_at DATETIME
-    );
-
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      username TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      salt TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'analyst',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS auth_sessions (
-      token_hash TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      csrf_token TEXT NOT NULL,
-      expires_at DATETIME NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS login_rate_limits (
-      identifier TEXT PRIMARY KEY,
-      failures INTEGER DEFAULT 0,
-      locked_until DATETIME,
-      alerted INTEGER DEFAULT 0,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS admin_audit_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      query TEXT NOT NULL,
-      duration_ms INTEGER NOT NULL,
-      rows_returned INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_incidents_timestamp ON incidents(timestamp DESC);
-    CREATE INDEX IF NOT EXISTS idx_incidents_severity ON incidents(severity);
-    CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_identifier);
-    CREATE INDEX IF NOT EXISTS idx_activities_session ON session_activities(session_id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
-    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
-  `);
-
-  try {
-    db.exec('ALTER TABLE login_rate_limits ADD COLUMN alerted INTEGER DEFAULT 0');
-  } catch (_) {}
+  // Prepared statement cache for high performance
+  const statementCache = new Map();
+  function getPrepared(sql) {
+    let stmt = statementCache.get(sql);
+    if (!stmt) {
+      stmt = db.prepare(sql);
+      statementCache.set(sql, stmt);
+    }
+    return stmt;
+  }
 
   return {
     raw: db,
 
+    // -------------------------------------------------------------------------
+    // Incident Telemetry & Cryptographic Hash Chaining
+    // -------------------------------------------------------------------------
     insertIncident(event) {
-      try {
-        const stmt = db.prepare(`
-          INSERT INTO incidents (id, timestamp, severity, type, rule_id, source_ip, target, action, details)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-        stmt.run(
-          event.id,
-          event.timestamp,
-          event.severity,
-          event.type,
-          event.ruleId || 'RULE-GENERIC',
-          event.sourceIp,
-          event.target,
-          event.action,
-          event.details
-        );
-      } catch (err) {
-        console.error('[DB Error] Failed to insert incident:', err.message);
-      }
-    },
+      const isSimulated = event.isSimulated ? 1 : 0;
 
-    getIncidents(limit = 100, severity = 'ALL', offset = 0) {
+      // 1. Fetch previous incident hash to maintain cryptographic chain
+      let prevHash = '0'.repeat(64); // Genesis hash
       try {
-        const parsedLimit = Math.max(1, Math.min(500, parseInt(limit, 10) || 100));
-        const parsedOffset = Math.max(0, parseInt(offset, 10) || 0);
-        if (severity === 'ALL') {
-          const stmt = db.prepare(`SELECT * FROM incidents ORDER BY timestamp DESC LIMIT ? OFFSET ?`);
-          return stmt.all(parsedLimit, parsedOffset);
-        } else {
-          const stmt = db.prepare(`SELECT * FROM incidents WHERE severity = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`);
-          return stmt.all(severity, parsedLimit, parsedOffset);
+        const lastRow = db.prepare('SELECT hash FROM incidents ORDER BY rowid DESC LIMIT 1').get();
+        if (lastRow && lastRow.hash) {
+          prevHash = lastRow.hash;
         }
-      } catch (err) {
-        console.error('[DB Error] Failed to query incidents:', err.message);
-        return [];
+      } catch (_) {}
+
+      // 2. Canonical serialization for immutable SHA-256 fingerprinting
+      const canonicalData = [
+        prevHash,
+        event.id,
+        event.timestamp,
+        event.severity,
+        event.type,
+        event.sourceIp,
+        event.target
+      ].join('|');
+      const hash = crypto.createHash('sha256').update(canonicalData).digest('hex');
+
+      const stmt = getPrepared(`
+        INSERT INTO incidents (id, timestamp, severity, type, rule_id, source_ip, target, action, details, is_simulated, prev_hash, hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run(
+        event.id,
+        event.timestamp,
+        event.severity,
+        event.type,
+        event.ruleId || 'RULE-GENERIC',
+        event.sourceIp,
+        event.target,
+        event.action,
+        event.details,
+        isSimulated,
+        prevHash,
+        hash
+      );
+    },
+
+    getIncidents(limit = 100, severity = 'ALL', offset = 0, includeSimulated = false) {
+      const parsedLimit = Math.max(1, Math.min(500, parseInt(limit, 10) || 100));
+      const parsedOffset = Math.max(0, parseInt(offset, 10) || 0);
+      const simClause = includeSimulated ? '' : 'AND (is_simulated IS NULL OR is_simulated = 0)';
+
+      if (severity === 'ALL') {
+        const sql = `SELECT * FROM incidents WHERE 1=1 ${simClause} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+        return db.prepare(sql).all(parsedLimit, parsedOffset);
+      } else {
+        const sql = `SELECT * FROM incidents WHERE severity = ? ${simClause} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+        return db.prepare(sql).all(severity, parsedLimit, parsedOffset);
       }
     },
 
+    verifyIncidentLogIntegrity() {
+      const rows = db.prepare('SELECT id, timestamp, severity, type, source_ip, target, prev_hash, hash FROM incidents ORDER BY rowid ASC').all();
+      let expectedPrevHash = '0'.repeat(64);
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.prev_hash !== expectedPrevHash) {
+          return {
+            valid: false,
+            brokenAtId: row.id,
+            reason: `Discrepancia en enlace de cadena prev_hash en registro ${row.id}`,
+            expectedPrevHash,
+            actualPrevHash: row.prev_hash
+          };
+        }
+
+        const canonicalData = [
+          row.prev_hash,
+          row.id,
+          row.timestamp,
+          row.severity,
+          row.type,
+          row.source_ip,
+          row.target
+        ].join('|');
+        const calculatedHash = crypto.createHash('sha256').update(canonicalData).digest('hex');
+
+        if (row.hash !== calculatedHash) {
+          return {
+            valid: false,
+            brokenAtId: row.id,
+            reason: `Firma criptográfica inválida (tampering detectado) en registro ${row.id}`,
+            expectedHash: calculatedHash,
+            actualHash: row.hash
+          };
+        }
+
+        expectedPrevHash = row.hash;
+      }
+
+      return {
+        valid: true,
+        verifiedCount: rows.length
+      };
+    },
+
+    // -------------------------------------------------------------------------
+    // Persistent IP Reputation & Telemetry Limiting
+    // -------------------------------------------------------------------------
+    getIpReputation(ip) {
+      const row = getPrepared(`SELECT * FROM ip_reputation WHERE ip = ?`).get(ip);
+      if (!row) {
+        return { ip, isBlocked: false, blockExpiresAt: null, failedAttempts: 0, reputationScore: 100 };
+      }
+      const isBlocked = row.block_expires_at ? new Date(row.block_expires_at).getTime() > Date.now() : false;
+      return {
+        ip: row.ip,
+        isBlocked,
+        blockExpiresAt: row.block_expires_at,
+        failedAttempts: row.failed_attempts || 0,
+        reputationScore: row.reputation_score ?? 100
+      };
+    },
+
+    recordIpAttempt(ip, isSuccess, threshold = 5, lockMinutes = 15) {
+      const current = getPrepared(`SELECT * FROM ip_reputation WHERE ip = ?`).get(ip);
+
+      if (isSuccess) {
+        getPrepared(`
+          INSERT INTO ip_reputation (ip, failed_attempts, block_expires_at, last_seen, updated_at)
+          VALUES (?, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          ON CONFLICT(ip) DO UPDATE SET
+            failed_attempts = 0,
+            block_expires_at = NULL,
+            last_seen = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        `).run(ip);
+        return { isBlocked: false, failedAttempts: 0, blockExpiresAt: null };
+      }
+
+      const failures = (current ? current.failed_attempts : 0) + 1;
+      let blockExpiresAt = current ? current.block_expires_at : null;
+      let isBlocked = false;
+
+      if (failures >= threshold) {
+        isBlocked = true;
+        blockExpiresAt = new Date(Date.now() + lockMinutes * 60 * 1000).toISOString();
+      }
+
+      getPrepared(`
+        INSERT INTO ip_reputation (ip, failed_attempts, block_expires_at, first_seen, last_seen, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(ip) DO UPDATE SET
+          failed_attempts = ?,
+          block_expires_at = ?,
+          last_seen = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(ip, failures, blockExpiresAt, failures, blockExpiresAt);
+
+      return { isBlocked, failedAttempts: failures, blockExpiresAt };
+    },
+
+    // -------------------------------------------------------------------------
+    // Endpoint Scans & Analytics Summary
+    // -------------------------------------------------------------------------
     saveScanResult(scan) {
-      try {
-        const stmt = db.prepare(`
-          INSERT INTO endpoint_scans (target_url, status_code, security_score, missing_headers_count, latency_ms)
-          VALUES (?, ?, ?, ?, ?)
-        `);
-        stmt.run(
-          scan.url,
-          scan.statusCode || 0,
-          scan.securityScore || 0,
-          scan.missingHeadersCount || 0,
-          scan.latencyMs || 0
-        );
-      } catch (err) {
-        console.error('[DB Error] Failed to save scan:', err.message);
-      }
+      const stmt = getPrepared(`
+        INSERT INTO endpoint_scans (target_url, status_code, security_score, missing_headers_count, latency_ms)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      stmt.run(
+        scan.url,
+        scan.statusCode || 0,
+        scan.securityScore || 0,
+        scan.missingHeadersCount || 0,
+        scan.latencyMs || 0
+      );
     },
 
-    createSession(data) {
-      try {
-        const sessionId = 'SESS-' + crypto.randomUUID().toUpperCase();
-        const loginTime = new Date().toISOString();
-        const stmt = db.prepare(`
-          INSERT INTO user_sessions (session_id, user_identifier, role, ip_address, login_portal, user_agent, status, login_time, logout_time, duration_minutes)
-          VALUES (?, ?, ?, ?, ?, ?, 'ACTIVA', ?, NULL, 0)
-        `);
-        stmt.run(
-          sessionId,
-          data.user_identifier || 'usuario.anonimo',
-          data.role || 'USUARIO',
-          data.ip_address || '127.0.0.1',
-          data.login_portal || '/auth/login',
-          data.user_agent || 'Standard Web Client',
-          loginTime
-        );
-
-        this.recordActivity(sessionId, 'AUTH_LOGIN', data.login_portal || '/auth/login', 'Inicio de sesión verificado.', 'NORMAL');
-        return sessionId;
-      } catch (err) {
-        console.error('[DB Error] Failed to create session:', err.message);
-        return null;
-      }
+    incrementDailyInspection(isThreat = false) {
+      const today = new Date().toISOString().slice(0, 10);
+      getPrepared(`
+        INSERT INTO daily_metrics (date, inspections_count, threats_count, updated_at)
+        VALUES (?, 1, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(date) DO UPDATE SET
+          inspections_count = inspections_count + 1,
+          threats_count = threats_count + ?,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(today, isThreat ? 1 : 0, isThreat ? 1 : 0);
     },
 
+    getAnalyticsSummary(includeSimulated = false) {
+      const simFilter = includeSimulated ? '' : 'WHERE (is_simulated IS NULL OR is_simulated = 0)';
+      const simFilterAnd = includeSimulated ? '' : 'AND (is_simulated IS NULL OR is_simulated = 0)';
+
+      const totalIncidents = db.prepare(`SELECT COUNT(*) as c FROM incidents ${simFilter}`).get().c;
+      const criticalCount = db.prepare(`SELECT COUNT(*) as c FROM incidents WHERE severity = 'CRITICAL' ${simFilterAnd}`).get().c;
+      const highCount = db.prepare(`SELECT COUNT(*) as c FROM incidents WHERE severity = 'HIGH' ${simFilterAnd}`).get().c;
+      const threatsDetected = db.prepare(`SELECT COUNT(*) as c FROM incidents WHERE severity IN ('CRITICAL', 'HIGH') ${simFilterAnd}`).get().c;
+      const bruteForceBlocked = db.prepare(`SELECT COUNT(*) as c FROM incidents WHERE type LIKE '%BRUTEFORCE%' ${simFilterAnd}`).get().c;
+
+      let totalScans = 0;
+      try {
+        totalScans = db.prepare(`SELECT COUNT(*) as c FROM endpoint_scans`).get().c;
+      } catch (_) {}
+
+      let inspectionsRun = 0;
+      try {
+        const dm = db.prepare(`SELECT COALESCE(SUM(inspections_count), 0) as c FROM daily_metrics`).get();
+        inspectionsRun = dm ? dm.c : 0;
+      } catch (_) {}
+
+      let topIps = [];
+      try {
+        topIps = db.prepare(`SELECT source_ip, COUNT(*) as count FROM incidents ${simFilter} GROUP BY source_ip ORDER BY count DESC LIMIT 5`).all();
+      } catch (_) {}
+
+      let severityDistribution = [];
+      try {
+        severityDistribution = db.prepare(`SELECT severity, COUNT(*) as count FROM incidents ${simFilter} GROUP BY severity`).all();
+      } catch (_) {}
+
+      return {
+        totalIncidents,
+        criticalCount,
+        highCount,
+        threatsDetected,
+        bruteForceBlocked,
+        totalScans,
+        inspectionsRun,
+        topIps,
+        severityDistribution
+      };
+    },
+
+    // -------------------------------------------------------------------------
+    // User Sessions & Activities Audit Flow
+    // -------------------------------------------------------------------------
     sessionExists(sessionId) {
       if (!sessionId || typeof sessionId !== 'string') return false;
       try {
-        const row = db.prepare(`SELECT session_id FROM user_sessions WHERE session_id = ?`).get(sessionId);
+        const row = getPrepared(`SELECT session_id FROM user_sessions WHERE session_id = ?`).get(sessionId);
         return Boolean(row);
       } catch (_) {
         return false;
       }
     },
 
-    recordActivity(sessionId, actionType, endpoint, description, riskLevel = 'NORMAL') {
-      const stmt = db.prepare(`
-        INSERT INTO session_activities (session_id, timestamp, action_type, endpoint, description, risk_level)
-        VALUES (?, ?, ?, ?, ?, ?)
+    createSession(data, isSimulated = false) {
+      const sessionId = 'SESS-' + crypto.randomUUID().toUpperCase();
+      const loginTime = new Date().toISOString();
+      const stmt = getPrepared(`
+        INSERT INTO user_sessions (session_id, user_identifier, role, ip_address, login_portal, user_agent, status, login_time, logout_time, duration_minutes, is_simulated)
+        VALUES (?, ?, ?, ?, ?, ?, 'ACTIVA', ?, NULL, 0, ?)
+      `);
+      stmt.run(
+        sessionId,
+        data.user_identifier || 'usuario.anonimo',
+        data.role || 'USUARIO',
+        data.ip_address || '127.0.0.1',
+        data.login_portal || '/auth/login',
+        data.user_agent || 'Standard Web Client',
+        loginTime,
+        isSimulated ? 1 : 0
+      );
+
+      this.recordActivity(sessionId, 'AUTH_LOGIN', data.login_portal || '/auth/login', 'Inicio de sesión verificado.', 'NORMAL', isSimulated);
+      return sessionId;
+    },
+
+    recordActivity(sessionId, actionType, endpoint, description, riskLevel = 'NORMAL', isSimulated = false) {
+      const stmt = getPrepared(`
+        INSERT INTO session_activities (session_id, timestamp, action_type, endpoint, description, risk_level, is_simulated)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
       stmt.run(
         sessionId,
@@ -250,13 +332,14 @@ function createDatabase(dbPath) {
         actionType,
         endpoint,
         description,
-        riskLevel
+        riskLevel,
+        isSimulated ? 1 : 0
       );
     },
 
     closeSession(sessionId) {
       if (!sessionId || typeof sessionId !== 'string') return false;
-      const sess = db.prepare(`SELECT login_time FROM user_sessions WHERE session_id = ?`).get(sessionId);
+      const sess = getPrepared(`SELECT login_time FROM user_sessions WHERE session_id = ?`).get(sessionId);
       if (!sess) return false;
 
       const logoutTime = new Date().toISOString();
@@ -266,7 +349,7 @@ function createDatabase(dbPath) {
         durationMinutes = Math.max(1, Math.round(diffMs / 60000));
       }
 
-      const stmt = db.prepare(`
+      const stmt = getPrepared(`
         UPDATE user_sessions 
         SET status = 'CERRADA', logout_time = ?, duration_minutes = ?
         WHERE session_id = ?
@@ -279,166 +362,89 @@ function createDatabase(dbPath) {
       return true;
     },
 
-    getUserSessions(limit = 50, offset = 0) {
-      try {
-        const parsedLimit = Math.max(1, Math.min(500, parseInt(limit, 10) || 50));
-        const parsedOffset = Math.max(0, parseInt(offset, 10) || 0);
-        const sessions = db.prepare(`
-          SELECT s.*, 
-            (SELECT COUNT(*) FROM session_activities WHERE session_id = s.session_id) as total_activities
-          FROM user_sessions s
-          ORDER BY s.login_time DESC
-          LIMIT ? OFFSET ?
-        `).all(parsedLimit, parsedOffset);
-
-        return sessions;
-      } catch (err) {
-        console.error('[DB Error] Failed to get sessions:', err.message);
-        return [];
-      }
-    },
-
     getSessionActivities(sessionId) {
-      try {
-        const stmt = db.prepare(`
-          SELECT * FROM session_activities 
-          WHERE session_id = ? 
-          ORDER BY timestamp ASC
-        `);
-        return stmt.all(sessionId);
-      } catch (err) {
-        console.error('[DB Error] Failed to get session activities:', err.message);
-        return [];
-      }
+      const stmt = getPrepared(`
+        SELECT * FROM session_activities
+        WHERE session_id = ?
+        ORDER BY timestamp ASC
+      `);
+      return stmt.all(sessionId);
     },
 
-    getAnalyticsSummary() {
-      try {
-        const totalIncidents = db.prepare(`SELECT COUNT(*) as count FROM incidents`).get().count;
-        const criticalCount = db.prepare(`SELECT COUNT(*) as count FROM incidents WHERE severity IN ('CRITICAL', 'HIGH')`).get().count;
-        const activeSessions = db.prepare(`SELECT COUNT(*) as count FROM user_sessions WHERE status = 'ACTIVA'`).get().count;
-        const totalActivities = db.prepare(`SELECT COUNT(*) as count FROM session_activities`).get().count;
-        
-        const topIps = db.prepare(`
-          SELECT source_ip, COUNT(*) as hits 
-          FROM incidents 
-          GROUP BY source_ip 
-          ORDER BY hits DESC 
-          LIMIT 5
-        `).all();
-
-        const severityDistribution = db.prepare(`
-          SELECT severity, COUNT(*) as count 
-          FROM incidents 
-          GROUP BY severity
-        `).all();
-
-        return {
-          totalIncidents,
-          criticalCount,
-          activeSessions,
-          totalActivities,
-          topIps,
-          severityDistribution
-        };
-      } catch (err) {
-        console.error('[DB Error] Analytics failed:', err.message);
-        return { totalIncidents: 0, criticalCount: 0, activeSessions: 0, totalActivities: 0, topIps: [], severityDistribution: [] };
-      }
+    getUserSessions(limit = 50, offset = 0, includeSimulated = false) {
+      const simClause = includeSimulated ? '' : 'WHERE (is_simulated IS NULL OR is_simulated = 0)';
+      const stmt = db.prepare(`
+        SELECT * FROM user_sessions
+        ${simClause}
+        ORDER BY login_time DESC
+        LIMIT ? OFFSET ?
+      `);
+      return stmt.all(limit, offset);
     },
 
-    // --- Authentication & Audit Log Methods ---
-
+    // -------------------------------------------------------------------------
+    // API Keys Management
+    // -------------------------------------------------------------------------
     findApiKeyByHash(keyHash) {
-      try {
-        return db.prepare(`SELECT * FROM api_keys WHERE key_hash = ?`).get(keyHash);
-      } catch (err) {
-        console.error('[DB Error] findApiKeyByHash:', err.message);
-        return null;
-      }
+      return getPrepared(`SELECT * FROM api_keys WHERE key_hash = ?`).get(keyHash);
     },
 
-    touchApiKey(id) {
+    touchApiKey(keyId) {
       try {
-        db.prepare(`UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+        getPrepared(`UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`).run(keyId);
       } catch (_) {}
     },
 
+    // -------------------------------------------------------------------------
+    // Dashboard Users & Authentication RBAC
+    // -------------------------------------------------------------------------
     findUserByUsername(username) {
-      try {
-        return db.prepare(`SELECT * FROM users WHERE username = ?`).get(username);
-      } catch (err) {
-        console.error('[DB Error] findUserByUsername:', err.message);
-        return null;
-      }
+      return getPrepared(`SELECT * FROM users WHERE username = ?`).get(username);
     },
 
-    findUserById(id) {
-      try {
-        return db.prepare(`SELECT id, username, role, created_at FROM users WHERE id = ?`).get(id);
-      } catch (err) {
-        console.error('[DB Error] findUserById:', err.message);
-        return null;
-      }
+    findUserById(userId) {
+      return getPrepared(`SELECT id, username, role FROM users WHERE id = ?`).get(userId);
     },
 
-    createAuthSession(userId, ttlHours = 8) {
-      try {
-        const rawToken = crypto.randomBytes(32).toString('hex');
-        const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-        const csrfToken = crypto.randomBytes(24).toString('hex');
-        const expiresAt = new Date(Date.now() + ttlHours * 3600 * 1000).toISOString();
-        db.prepare(`
-          INSERT INTO auth_sessions (token_hash, user_id, csrf_token, expires_at)
-          VALUES (?, ?, ?, ?)
-        `).run(tokenHash, userId, csrfToken, expiresAt);
-        return { sessionId: rawToken, rawToken, tokenHash, csrfToken, expiresAt };
-      } catch (err) {
-        console.error('[DB Error] createAuthSession:', err.message);
-        return null;
-      }
+    createAuthSession(userId, durationHours = 8) {
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      const csrfToken = crypto.randomBytes(24).toString('hex');
+      const expiresAt = new Date(Date.now() + durationHours * 3600 * 1000).toISOString();
+
+      getPrepared(`
+        INSERT INTO auth_sessions (token_hash, user_id, csrf_token, expires_at, created_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(tokenHash, userId, csrfToken, expiresAt);
+
+      return { rawToken, csrfToken, expiresAt };
     },
 
     getAuthSession(rawToken) {
-      try {
-        if (!rawToken || typeof rawToken !== 'string') return null;
-        const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-        const session = db.prepare(`
-          SELECT s.*, u.username, u.role
-          FROM auth_sessions s
-          JOIN users u ON u.id = s.user_id
-          WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP
-        `).get(tokenHash);
-        return session || null;
-      } catch (err) {
-        console.error('[DB Error] getAuthSession:', err.message);
-        return null;
-      }
+      if (!rawToken || typeof rawToken !== 'string') return null;
+      const tokenHash = crypto.createHash('sha256').update(rawToken.trim()).digest('hex');
+      const row = getPrepared(`
+        SELECT s.token_hash, s.user_id, s.csrf_token, s.expires_at, u.username, u.role
+        FROM auth_sessions s
+        JOIN users u ON s.user_id = u.id
+        WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP
+      `).get(tokenHash);
+
+      return row || null;
     },
 
-    deleteAuthSession(rawToken) {
-      try {
-        if (!rawToken) return false;
-        const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-        db.prepare(`DELETE FROM auth_sessions WHERE token_hash = ?`).run(tokenHash);
-        return true;
-      } catch (err) {
-        console.error('[DB Error] deleteAuthSession:', err.message);
-        return false;
-      }
+    revokeAuthSession(rawToken) {
+      if (!rawToken || typeof rawToken !== 'string') return;
+      const tokenHash = crypto.createHash('sha256').update(rawToken.trim()).digest('hex');
+      getPrepared(`DELETE FROM auth_sessions WHERE token_hash = ?`).run(tokenHash);
     },
 
-    purgeExpiredSessions() {
-      try {
-        db.prepare(`DELETE FROM auth_sessions WHERE expires_at <= CURRENT_TIMESTAMP`).run();
-      } catch (err) {
-        console.error('[DB Error] purgeExpiredSessions:', err.message);
-      }
-    },
-
+    // -------------------------------------------------------------------------
+    // Login Rate Limiting (Dashboard)
+    // -------------------------------------------------------------------------
     checkLoginRateLimit(identifier) {
       try {
-        const row = db.prepare(`SELECT * FROM login_rate_limits WHERE identifier = ?`).get(identifier);
+        const row = getPrepared(`SELECT * FROM login_rate_limits WHERE identifier = ?`).get(identifier);
         if (row && row.locked_until) {
           const lockTime = new Date(row.locked_until).getTime();
           const now = Date.now();
@@ -456,7 +462,7 @@ function createDatabase(dbPath) {
 
     incrementBlockedAttempts(identifier) {
       try {
-        db.prepare(`
+        getPrepared(`
           UPDATE login_rate_limits
           SET failures = failures + 1, updated_at = CURRENT_TIMESTAMP
           WHERE identifier = ?
@@ -466,7 +472,7 @@ function createDatabase(dbPath) {
 
     getUserLoginFailures(identifier) {
       try {
-        const row = db.prepare(`SELECT failures FROM login_rate_limits WHERE identifier = ?`).get(identifier);
+        const row = getPrepared(`SELECT failures FROM login_rate_limits WHERE identifier = ?`).get(identifier);
         return row ? (row.failures || 0) : 0;
       } catch (_) {
         return 0;
@@ -475,7 +481,7 @@ function createDatabase(dbPath) {
 
     recordLoginFailure(identifier, maxFailures = 5, lockMinutes = 15) {
       try {
-        const row = db.prepare(`SELECT * FROM login_rate_limits WHERE identifier = ?`).get(identifier);
+        const row = getPrepared(`SELECT * FROM login_rate_limits WHERE identifier = ?`).get(identifier);
         const currentFailures = (row ? row.failures : 0) + 1;
         let lockedUntil = null;
         let isLocked = false;
@@ -483,9 +489,7 @@ function createDatabase(dbPath) {
         let shouldAlert = false;
         let alerted = row ? (row.alerted || 0) : 0;
 
-        // Hard lock ONLY applies to IP identifiers ('ip:...')
         const isIp = identifier.startsWith('ip:');
-
         if (isIp && currentFailures >= maxFailures) {
           isLocked = true;
           retryAfterSec = lockMinutes * 60;
@@ -496,7 +500,7 @@ function createDatabase(dbPath) {
           }
         }
 
-        db.prepare(`
+        getPrepared(`
           INSERT INTO login_rate_limits (identifier, failures, locked_until, alerted, updated_at)
           VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
           ON CONFLICT(identifier) DO UPDATE SET
@@ -515,16 +519,19 @@ function createDatabase(dbPath) {
 
     resetLoginRateLimit(identifier) {
       try {
-        db.prepare(`DELETE FROM login_rate_limits WHERE identifier = ?`).run(identifier);
+        getPrepared(`DELETE FROM login_rate_limits WHERE identifier = ?`).run(identifier);
       } catch (_) {}
     },
 
-    insertAuditLog({ userId, query, durationMs, rowsReturned }) {
+    // -------------------------------------------------------------------------
+    // Audit Logging & Forensics Console
+    // -------------------------------------------------------------------------
+    insertAuditLog({ action = 'SQL_QUERY', userId, ip = '127.0.0.1', details = '', query = '', durationMs = 0, rowsReturned = 0 }) {
       try {
-        db.prepare(`
-          INSERT INTO admin_audit_log (user_id, query, duration_ms, rows_returned)
-          VALUES (?, ?, ?, ?)
-        `).run(userId, query, durationMs, rowsReturned);
+        getPrepared(`
+          INSERT INTO admin_audit_log (action, user_id, ip, details, query, duration_ms, rows_returned, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(action, userId, ip, details, query, durationMs, rowsReturned);
       } catch (err) {
         console.error('[DB Error] insertAuditLog:', err.message);
       }
@@ -532,21 +539,103 @@ function createDatabase(dbPath) {
 
     runReadOnlyQuery(sql) {
       const cleanSql = sql.trim();
-      if (!/^\s*SELECT\b/i.test(cleanSql)) {
-        throw new Error('Solo se permiten consultas SQL de lectura (SELECT)');
+      if (!/^\s*(SELECT|WITH)\b/i.test(cleanSql)) {
+        throw new Error('Solo se permiten consultas SQL de lectura (SELECT o WITH)');
       }
       const stmt = db.prepare(cleanSql);
       return stmt.all();
     },
 
+    // -------------------------------------------------------------------------
+    // Retention & Expiration Purger
+    // -------------------------------------------------------------------------
+    purgeExpiredRecords(retentionDays = 90) {
+      const results = {};
+
+      // 1. Purge INFO & PASSED older than 30 days
+      const r1 = db.prepare(`DELETE FROM incidents WHERE severity IN ('INFO', 'PASSED') AND timestamp < datetime('now', '-30 days')`).run();
+      results.infoPassedPurged = r1.changes;
+
+      // 2. Purge incidents older than RETENTION_DAYS
+      const r2 = db.prepare(`DELETE FROM incidents WHERE timestamp < datetime('now', '-' || ? || ' days')`).run(retentionDays);
+      results.incidentsPurged = r2.changes;
+
+      // 3. Purge expired auth sessions
+      const r3 = db.prepare(`DELETE FROM auth_sessions WHERE expires_at < datetime('now')`).run();
+      results.expiredSessionsPurged = r3.changes;
+
+      // 4. Purge expired login rate limits
+      const r4 = db.prepare(`DELETE FROM login_rate_limits WHERE locked_until IS NOT NULL AND locked_until < datetime('now')`).run();
+      results.rateLimitsPurged = r4.changes;
+
+      // 5. Purge expired IP reputation blocks
+      const r5 = db.prepare(`DELETE FROM ip_reputation WHERE block_expires_at IS NOT NULL AND block_expires_at < datetime('now')`).run();
+      results.reputationBlocksPurged = r5.changes;
+
+      return results;
+    },
+
+    // -------------------------------------------------------------------------
+    // Live Hot Backups via VACUUM INTO
+    // -------------------------------------------------------------------------
+    createBackup(backupDir, backupKeep = 7) {
+      if (!fs.existsSync(backupDir)) {
+        fs.mkdirSync(backupDir, { recursive: true });
+      }
+
+      const now = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      const timestampStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      const filename = `sentinel-${timestampStr}.sqlite`;
+      const backupPath = path.join(backupDir, filename);
+
+      // Execute native SQLite VACUUM INTO
+      db.prepare(`VACUUM INTO ?`).run(backupPath);
+
+      // Rotate existing backups
+      const files = fs.readdirSync(backupDir)
+        .filter(f => f.startsWith('sentinel-') && f.endsWith('.sqlite'))
+        .sort();
+
+      while (files.length > backupKeep) {
+        const oldest = files.shift();
+        try {
+          fs.unlinkSync(path.join(backupDir, oldest));
+        } catch (_) {}
+      }
+
+      return {
+        success: true,
+        filename,
+        backupPath,
+        retainedBackups: files.length
+      };
+    },
+
+    // -------------------------------------------------------------------------
+    // Transaction Wrapper
+    // -------------------------------------------------------------------------
+    transaction(fn) {
+      db.exec('BEGIN IMMEDIATE;');
+      try {
+        const result = fn(db);
+        db.exec('COMMIT;');
+        return result;
+      } catch (err) {
+        try { db.exec('ROLLBACK;'); } catch (_) {}
+        throw err;
+      }
+    },
+
     close() {
+      statementCache.clear();
       try {
         db.close();
-      } catch (err) {
-        // ignore if already closed
-      }
+      } catch (_) {}
     }
   };
 }
 
-module.exports = { createDatabase };
+module.exports = {
+  createDatabase
+};

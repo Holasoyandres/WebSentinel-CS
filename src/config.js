@@ -22,6 +22,9 @@ const config = {
     ? env.SCAN_ALLOWLIST.split(',').map(s => s.trim()).filter(Boolean)
     : [], // Default is empty: private networks or local scanning must be explicitly declared in .env
   RETENTION_DAYS: parseInt(env.RETENTION_DAYS || '90', 10),
+  STORE_PASSED_EVENTS: env.STORE_PASSED_EVENTS === 'true', // Default false: pass events aggregate daily, not stored row by row
+  BACKUP_KEEP: parseInt(env.BACKUP_KEEP || '7', 10),
+  BACKUP_DIR: env.BACKUP_DIR || path.join(__dirname, '..', 'data', 'backups'),
   LOG_LEVEL: env.LOG_LEVEL || 'info',
   MAX_BODY_BYTES: parseInt(env.MAX_BODY_BYTES || '1048576', 10) // 1 MB
 };

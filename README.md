@@ -123,7 +123,63 @@
 | `GET` | `/api/export-csv` | Descarga de registro forense en formato CSV. |
 | `POST` | `/api/scan` | Ejecuta auditoría remota sobre una URL objetivo. |
 | `POST` | `/api/analyze-request` | Inspección heurística de cadenas y honeypots. |
-| `POST` | `/api/record-login` | Registro de intentos de autenticación y cálculo de rate limiting. |
+| `POST` | `/api/record-login` | Registro de intentos de autenticación y cálculo de rate limiting persistente. |
+| `GET` | `/api/v1/ip/:ip/status` | Consulta de reputación y estado de bloqueo de una dirección IP. |
+| `GET` | `/api/v1/integrity/verify` | Verificación de cadena criptográfica SHA-256 e integridad de incidentes (Admin). |
+| `GET` | `/healthz` | Sondeo de salud con verificación activa a SQLite (`SELECT 1`). |
+| `GET` | `/readyz` | Sondeo de disponibilidad del daemon. |
+
+---
+
+## 🗄️ Migraciones, Respaldos y Restauración de Base de Datos
+
+### Migraciones Automáticas
+WebSentinel-CS incorpora un sistema de migraciones versionadas (`src/db/migrations/`) gestionado por la tabla `schema_migrations`. Al arrancar el daemon (`npm start`), las migraciones pendientes se aplican automáticamente dentro de transacciones inmediatas, garantizando actualización de esquema sin pérdida de datos históricos.
+
+### Respaldos en Caliente (Hot Backups)
+Genera una instantánea consistente en tiempo real mediante `VACUUM INTO` nativo de SQLite y rota las copias reteniendo los últimos `BACKUP_KEEP` archivos (por defecto 7):
+```bash
+npm run backup
+```
+Los respaldos se almacenan con convención temporal en `data/backups/sentinel-YYYYMMDD-HHmmss.sqlite`.
+
+### Procedimiento de Restauración
+Para restaurar el estado del centinela desde una instantánea:
+1. **Detener el servicio:**
+   ```bash
+   sudo systemctl stop websentinel # O: pm2 stop websentinel-cs
+   ```
+2. **Resguardar la base de datos dañada o anterior:**
+   ```bash
+   mv data/sentinel.sqlite data/sentinel.sqlite.damaged
+   ```
+3. **Restaurar la instantánea elegida:**
+   ```bash
+   cp data/backups/sentinel-20261029-110000.sqlite data/sentinel.sqlite
+   ```
+4. **Reiniciar el daemon:**
+   ```bash
+   sudo systemctl start websentinel # O: npm start
+   ```
+5. **Verificar estado de salud e integridad criptográfica:**
+   ```bash
+   curl -s http://127.0.0.1:4000/healthz
+   ```
+
+### Purga y Retención Configurable
+Ejecuta la purga de sesiones expiradas, bloqueos caducados e incidentes que superan `RETENTION_DAYS`:
+```bash
+npm run purge
+```
+
+---
+
+## 🚀 Despliegue en Producción (`deploy/`)
+
+En la carpeta `deploy/` se encuentran plantillas listas para producción:
+* `deploy/websentinel.service`: Unidad de servicio de **systemd** con directivas de contención.
+* `deploy/ecosystem.config.js`: Configuración de **PM2** con drenado de 10s.
+* `deploy/nginx.conf`: Proxy inverso **Nginx** con TLS moderna y cabeceras de reenvío confiable (`TRUST_PROXIES=true`).
 
 ---
 

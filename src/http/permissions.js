@@ -9,14 +9,16 @@ const SCOPE_PERMISSIONS = {
     'POST:/api/record-login',
     'POST:/api/sessions/login',
     'POST:/api/sessions/activity',
-    'POST:/api/sessions/logout'
+    'POST:/api/sessions/logout',
+    'GET:/api/v1/ip/:ip/status'
   ]),
   read: new Set([
     'GET:/api/stats',
     'GET:/api/events',
     'GET:/api/sql/summary',
     'GET:/api/sessions',
-    'GET:/api/sessions/activities'
+    'GET:/api/sessions/activities',
+    'GET:/api/v1/ip/:ip/status'
   ])
 };
 
@@ -28,6 +30,7 @@ const ROLE_PERMISSIONS = {
     'GET:/api/sessions',
     'GET:/api/sessions/activities',
     'GET:/api/auth/me',
+    'GET:/api/v1/ip/:ip/status',
     'POST:/api/auth/logout'
   ]),
   analyst: new Set([
@@ -37,6 +40,7 @@ const ROLE_PERMISSIONS = {
     'GET:/api/sessions',
     'GET:/api/sessions/activities',
     'GET:/api/auth/me',
+    'GET:/api/v1/ip/:ip/status',
     'POST:/api/auth/logout',
     'POST:/api/scan',
     'GET:/api/export-csv',
@@ -45,12 +49,20 @@ const ROLE_PERMISSIONS = {
     'POST:/api/sessions/simulate'
   ]),
   admin: new Set([
-    '*' // Full administrative access including /api/sql/query
+    '*' // Full administrative access including /api/sql/query and /api/v1/integrity/verify
   ])
 };
 
+function normalizePath(pathname) {
+  if (pathname.startsWith('/api/v1/ip/') && pathname.endsWith('/status')) {
+    return '/api/v1/ip/:ip/status';
+  }
+  return pathname;
+}
+
 function verifyAuthorization(auth, pathname, method) {
-  const routeKey = `${method.toUpperCase()}:${pathname}`;
+  const normalizedPath = normalizePath(pathname);
+  const routeKey = `${method.toUpperCase()}:${normalizedPath}`;
 
   // 1. Integrations (API Keys)
   if (auth.type === 'api_key') {

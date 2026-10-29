@@ -1,13 +1,15 @@
 /**
- * WebSentinel-CS :: API Routes Handler (Hardenized P1.1 Architecture)
- * Dispatches and processes all /api/* endpoints with RBAC, CSRF, Permissions Matrix, and Brute-Force Throttling
+ * WebSentinel-CS :: API Routes Handler (Hardenized P1.2 & FASE 2 Architecture)
+ * Dispatches and processes all /api/* endpoints with RBAC, CSRF, Permissions Matrix,
+ * Brute-Force Throttling, Persistent IP Reputation, and Cryptographic Audit Verification.
  */
 
+const crypto = require('node:crypto');
 const { parseJsonBody } = require('../http/body');
 const { sendJson, sendError, sendCsv } = require('../http/respond');
 const { inspectPayload } = require('../engine/signatures');
 const { auditTargetUrl } = require('../engine/scanner');
-const { authenticateRequest, verifyScryptPassword } = require('../http/auth');
+const { authenticateRequest, verifyScryptPassword, parseCookies } = require('../http/auth');
 const { verifyAuthorization } = require('../http/permissions');
 const { sanitizeAndValidateQuery, executeQueryWithWorker } = require('../engine/sql-runner');
 
@@ -23,17 +25,27 @@ function getEffectiveClientIp(req, bodyIp, auth, config) {
   if (auth && auth.type === 'api_key' && auth.scopes && auth.scopes.includes('ingest') && bodyIp) {
     return String(bodyIp).trim();
   }
+  if (config.TRUST_PROXIES || process.env.TRUST_PROXIES === 'true') {
+    const xff = req.headers['x-forwarded-for'];
+    if (xff && typeof xff === 'string') {
+      const parts = xff.split(',').map(s => s.trim()).filter(Boolean);
+      if (parts.length > 0) {
+        return parts[parts.length - 1];
+      }
+    }
+  }
   return req.socket.remoteAddress || '127.0.0.1';
 }
 
 function createApiHandler({ config, db, rateLimiter, stats }) {
   const activeSqlQueriesByUser = new Set();
-  function logEvent(type, severity, sourceIp, target, ruleId, details, action = 'LOGGED') {
+
+  function logEvent(type, severity, sourceIp, target, ruleId, details, action = 'LOGGED', isSimulated = false) {
     const sev = ALLOWED_SEVERITY.has(severity) ? severity : 'INFO';
     const act = ALLOWED_ACTIONS.has(action) ? action : 'LOGGED';
 
     const event = {
-      id: 'SEC-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substr(2, 4).toUpperCase(),
+      id: 'SEC-' + crypto.randomUUID(),
       timestamp: new Date().toISOString(),
       type,
       severity: sev,
@@ -41,12 +53,13 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       target: target || '/api',
       ruleId: ruleId || 'RULE-GENERIC',
       details,
-      action: act
+      action: act,
+      isSimulated: Boolean(isSimulated)
     };
 
     db.insertIncident(event);
 
-    if (sev === 'CRITICAL' || sev === 'HIGH') {
+    if (!isSimulated && (sev === 'CRITICAL' || sev === 'HIGH')) {
       stats.threatsDetected++;
     }
     return event;
@@ -58,15 +71,39 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
 
     try {
       // -----------------------------------------------------------------------
-      // Public Route: /healthz
+      // Public Route: /healthz (Real Database SELECT 1 Verification)
       // -----------------------------------------------------------------------
       if (pathname === '/healthz') {
-        return sendJson(res, 200, {
-          status: 'UP',
-          version: config.VERSION,
-          engine: 'ACTIVE_ARMED',
-          timestamp: new Date().toISOString()
-        });
+        try {
+          db.raw.prepare('SELECT 1 as ok').get();
+          return sendJson(res, 200, {
+            status: 'UP',
+            database: 'OK',
+            version: config.VERSION,
+            engine: 'ACTIVE_ARMED',
+            uptime: Math.floor((Date.now() - stats.startTime) / 1000),
+            timestamp: new Date().toISOString()
+          });
+        } catch (err) {
+          return sendJson(res, 503, {
+            status: 'DOWN',
+            database: 'ERROR',
+            error: err.message,
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // Public Route: /readyz
+      // -----------------------------------------------------------------------
+      if (pathname === '/readyz') {
+        try {
+          db.raw.prepare('SELECT 1 as ok').get();
+          return sendJson(res, 200, { ready: true });
+        } catch (err) {
+          return sendJson(res, 503, { ready: false, error: err.message });
+        }
       }
 
       // -----------------------------------------------------------------------
@@ -76,7 +113,7 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
         const body = await parseJsonBody(req, config.MAX_BODY_BYTES);
         const { username, password } = body;
 
-        // Strict Type and Bounds Validation (Rejects objects with 400, never 500)
+        // Strict Type and Bounds Validation
         if (typeof username !== 'string' || typeof password !== 'string') {
           return sendError(res, 400, 'Los campos de usuario y contraseña deben ser cadenas de texto');
         }
@@ -160,6 +197,13 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
           return sendError(res, 500, 'No fue posible inicializar la sesión de analista');
         }
 
+        db.insertAuditLog({
+          action: 'LOGIN',
+          userId: user.id,
+          ip: clientIp,
+          details: 'Inicio de sesión exitoso en el panel'
+        });
+
         const isTls = Boolean(req.socket.encrypted);
         const isProxyHttps = (config.TRUST_PROXIES || process.env.TRUST_PROXIES === 'true') && req.headers['x-forwarded-proto'] === 'https';
         const isSecure = config.ENV === 'production' && (isTls || isProxyHttps);
@@ -214,42 +258,53 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/auth/logout') {
         if (auth.session) {
-          db.deleteAuthSession(auth.session.rawToken || auth.session.token_hash);
+          db.revokeAuthSession(auth.session.rawToken || auth.session.token_hash);
         }
+        const userId = (auth.user && auth.user.id) || 'usr-anonymous';
+        const clientIp = req.socket.remoteAddress || '127.0.0.1';
+        db.insertAuditLog({
+          action: 'LOGOUT',
+          userId,
+          ip: clientIp,
+          details: 'Cierre voluntario de sesión de panel'
+        });
+
         const cookieHeader = 'sentinel_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0';
         return sendJson(res, 200, { success: true }, { 'Set-Cookie': cookieHeader });
       }
 
       // -----------------------------------------------------------------------
-      // GET /api/stats
+      // GET /api/stats (Database-Backed Persistent Telemetry)
       // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/stats') {
-        const summary = db.getAnalyticsSummary();
+        const summary = db.getAnalyticsSummary(false);
         return sendJson(res, 200, {
-          totalScans: stats.totalScans,
-          threatsDetected: stats.threatsDetected,
-          bruteForceBlocked: stats.bruteForceBlocked,
-          inspectionsRun: stats.inspectionsRun,
+          totalScans: summary.totalScans,
+          threatsDetected: summary.threatsDetected,
+          bruteForceBlocked: summary.bruteForceBlocked,
+          inspectionsRun: summary.inspectionsRun,
           uptimeSeconds: Math.floor((Date.now() - stats.startTime) / 1000),
           totalPersistedIncidents: summary.totalIncidents,
           criticalCount: summary.criticalCount,
+          highCount: summary.highCount,
           engineStatus: 'ACTIVE_ARMED',
           storageEngine: 'SQLITE_PERSISTENT'
         });
       }
 
       // -----------------------------------------------------------------------
-      // GET /api/events
+      // GET /api/events (Segregates Simulated Data by Default)
       // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/events') {
         const severity = parsedUrl.searchParams.get('severity') || 'ALL';
         const limitParam = parsedUrl.searchParams.get('limit') || '100';
         const offsetParam = parsedUrl.searchParams.get('offset') || '0';
+        const includeSimulated = parsedUrl.searchParams.get('includeSimulated') === 'true';
 
         const limit = Math.min(Math.max(1, parseInt(limitParam, 10) || 100), 500);
         const offset = Math.max(0, parseInt(offsetParam, 10) || 0);
 
-        const rows = db.getIncidents(limit, severity, offset);
+        const rows = db.getIncidents(limit, severity, offset, includeSimulated);
         return sendJson(res, 200, rows);
       }
 
@@ -257,12 +312,12 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       // GET /api/sql/summary
       // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/sql/summary') {
-        const summary = db.getAnalyticsSummary();
+        const summary = db.getAnalyticsSummary(false);
         return sendJson(res, 200, summary);
       }
 
       // -----------------------------------------------------------------------
-      // POST /api/sql/query (Hardened SQL Forensics Console)
+      // POST /api/sql/query (Hardened SQL Forensics Console with Concurrency Cap)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sql/query') {
         const userRole = (auth.user && auth.user.role) || auth.role;
@@ -294,7 +349,9 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
           const rowsCount = execResult.rows ? execResult.rows.length : 0;
 
           db.insertAuditLog({
+            action: 'SQL_QUERY',
             userId,
+            ip: req.socket.remoteAddress || '127.0.0.1',
             query: cleanQuery,
             durationMs,
             rowsReturned: rowsCount
@@ -323,11 +380,23 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       // GET /api/export-csv
       // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/export-csv') {
-        const rows = db.getIncidents(500, 'ALL');
-        let csv = 'ID,TIMESTAMP,SEVERITY,TYPE,RULE_ID,SOURCE_IP,TARGET,ACTION,DETAILS\n';
+        const includeSimulated = parsedUrl.searchParams.get('includeSimulated') === 'true';
+        const rows = db.getIncidents(500, 'ALL', 0, includeSimulated);
+
+        const userId = (auth.user && auth.user.id) || 'usr-analyst';
+        const clientIp = req.socket.remoteAddress || '127.0.0.1';
+        db.insertAuditLog({
+          action: 'EXPORT_CSV',
+          userId,
+          ip: clientIp,
+          details: `Exportación de ${rows.length} eventos (includeSimulated=${includeSimulated})`,
+          rowsReturned: rows.length
+        });
+
+        let csv = 'ID,TIMESTAMP,SEVERITY,TYPE,RULE_ID,SOURCE_IP,TARGET,ACTION,IS_SIMULATED,DETAILS\n';
         for (const ev of rows) {
           const cleanDetails = (ev.details || '').replace(/"/g, '""');
-          csv += `"${ev.id}","${ev.timestamp}","${ev.severity}","${ev.type}","${ev.rule_id}","${ev.source_ip}","${ev.target}","${ev.action}","${cleanDetails}"\n`;
+          csv += `"${ev.id}","${ev.timestamp}","${ev.severity}","${ev.type}","${ev.rule_id}","${ev.source_ip}","${ev.target}","${ev.action}",${ev.is_simulated || 0},"${cleanDetails}"\n`;
         }
         return sendCsv(res, 'websentinel-audit-events.csv', csv);
       }
@@ -341,7 +410,6 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
           return sendError(res, 400, 'Parámetro URL requerido');
         }
 
-        stats.totalScans++;
         const audit = await auditTargetUrl(body.url, config.SCAN_ALLOWLIST, 3, 5000);
 
         if (!audit.error) {
@@ -372,11 +440,10 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // POST /api/analyze-request
+      // POST /api/analyze-request (WAF with Configurable Retention)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/analyze-request') {
         const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
-        stats.inspectionsRun++;
         const input = data.input || '';
         const honeypot = data.honeypot || '';
         const clientIp = getEffectiveClientIp(req, data.clientIp, auth, config);
@@ -384,9 +451,12 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
 
         const threats = inspectPayload(input, honeypot);
 
+        let recordedIncidentId = null;
+
         if (threats.length > 0) {
+          db.incrementDailyInspection(true);
           for (const t of threats) {
-            logEvent(
+            const ev = logEvent(
               'INJECTION_THREAT',
               t.severity,
               clientIp,
@@ -395,28 +465,34 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
               `${t.name} (${t.cwe}). Muestra: "${input.substring(0, 48)}"`,
               'BLOCKED'
             );
+            if (!recordedIncidentId) recordedIncidentId = ev.id;
           }
         } else {
-          logEvent(
-            'PAYLOAD_INSPECTED',
-            'INFO',
-            clientIp,
-            target,
-            'RULE-WAF-CLEAN',
-            'Comprobación de integridad exitosa. Sin patrones maliciosos conocidos.',
-            'PASSED'
-          );
+          db.incrementDailyInspection(false);
+          if (config.STORE_PASSED_EVENTS) {
+            const ev = logEvent(
+              'PAYLOAD_INSPECTED',
+              'INFO',
+              clientIp,
+              target,
+              'RULE-WAF-CLEAN',
+              'Comprobación de integridad exitosa. Sin patrones maliciosos conocidos.',
+              'PASSED'
+            );
+            recordedIncidentId = ev.id;
+          }
         }
 
         return sendJson(res, 200, {
           safe: threats.length === 0,
           threatCount: threats.length,
-          threats
+          threats,
+          incidentId: recordedIncidentId
         });
       }
 
       // -----------------------------------------------------------------------
-      // POST /api/record-login
+      // POST /api/record-login (Persistent Telemetry Rate Limiter in ip_reputation)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/record-login') {
         const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
@@ -424,27 +500,26 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
         const identifier = data.identifier || data.email || 'anonymous';
         const isSuccess = Boolean(data.success);
 
-        const rate = rateLimiter.evaluate(clientIp, !isSuccess);
+        const rep = db.recordIpAttempt(clientIp, isSuccess, 5, 15);
 
-        if (rate.isBlocked) {
-          stats.bruteForceBlocked++;
+        if (rep.isBlocked) {
           logEvent(
             'AUTH_BRUTEFORCE_MITIGATED',
             'CRITICAL',
             clientIp,
             '/auth/login',
             'RULE-RATE-001',
-            `Límite de tasa excedido (${rate.recentFailures} fallos/min). IP en cooldown por ${rate.retryAfterSec}s.`,
+            `Límite de tasa excedido en telemetría para ${clientIp}. Bloqueo persistente activo en ip_reputation.`,
             'IP_BLOCKED'
           );
         } else if (!isSuccess) {
           logEvent(
             'AUTH_FAILURE',
-            rate.recentFailures >= 3 ? 'HIGH' : 'LOW',
+            rep.failedAttempts >= 3 ? 'HIGH' : 'LOW',
             clientIp,
             '/auth/login',
             'RULE-AUTH-002',
-            `Intento de autenticación fallido para identidad "${identifier}". Conteo acumulado: ${rate.recentFailures}/${rate.threshold}.`,
+            `Intento de autenticación fallido para identidad "${identifier}". Conteo acumulado: ${rep.failedAttempts}/5.`,
             'REJECTED'
           );
         } else {
@@ -460,13 +535,44 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
         }
 
         return sendJson(res, 200, {
-          status: rate.isBlocked ? 'BLOCKED' : (isSuccess ? 'AUTHORIZED' : 'DENIED'),
-          rate
+          status: rep.isBlocked ? 'BLOCKED' : (isSuccess ? 'AUTHORIZED' : 'DENIED'),
+          rate: {
+            isBlocked: rep.isBlocked,
+            recentFailures: rep.failedAttempts,
+            threshold: 5,
+            retryAfterSec: rep.isBlocked ? 900 : 0
+          }
         });
       }
 
       // -----------------------------------------------------------------------
-      // POST /api/simulate-attack (DEMO_MODE Gated)
+      // GET /api/v1/ip/:ip/status (Persistent IP Reputation Query)
+      // -----------------------------------------------------------------------
+      if (method === 'GET' && pathname.startsWith('/api/v1/ip/') && pathname.endsWith('/status')) {
+        const parts = pathname.split('/');
+        const targetIp = parts[4];
+        if (!targetIp) {
+          return sendError(res, 400, 'Dirección IP requerida');
+        }
+        const rep = db.getIpReputation(targetIp);
+        return sendJson(res, 200, rep);
+      }
+
+      // -----------------------------------------------------------------------
+      // GET /api/v1/integrity/verify (Cryptographic SHA-256 Chain Verification)
+      // -----------------------------------------------------------------------
+      if (method === 'GET' && pathname === '/api/v1/integrity/verify') {
+        const userRole = (auth.user && auth.user.role) || auth.role;
+        if (userRole !== 'admin') {
+          return sendError(res, 403, 'Acceso denegado: La verificación de integridad requiere privilegios de administrador');
+        }
+
+        const report = db.verifyIncidentLogIntegrity();
+        return sendJson(res, 200, report);
+      }
+
+      // -----------------------------------------------------------------------
+      // POST /api/simulate-attack (DEMO_MODE Gated, Tagged as is_simulated=1)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/simulate-attack') {
         if (!config.DEMO_MODE) {
@@ -485,13 +591,13 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
             '/api/records/query',
             'SIG-SQLI-001',
             "Ataque simulado: [SELECT * FROM users WHERE id = '' OR 1=1 --]. Interceptado por motor heurístico.",
-            'BLOCKED'
+            'BLOCKED',
+            true
           );
         } else if (vector === 'bruteforce') {
           for (let i = 0; i < 5; i++) {
-            rateLimiter.evaluate(fakeIp, true);
+            db.recordIpAttempt(fakeIp, false, 5, 15);
           }
-          stats.bruteForceBlocked++;
           logEvent(
             'AUTH_BRUTEFORCE_MITIGATED',
             'CRITICAL',
@@ -499,7 +605,8 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
             '/auth/admin',
             'SIG-RATE-001',
             'Ataque de diccionario simulado: 5 intentos en 1.8s. Dirección IP bloqueada temporalmente.',
-            'IP_BLOCKED'
+            'IP_BLOCKED',
+            true
           );
         } else if (vector === 'bot_honeypot') {
           logEvent(
@@ -509,7 +616,8 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
             '/portal/contacto',
             'SIG-BOT-001',
             'Rastreador automatizado neutralizado: Campo trampa de verificación poblado con valor sintético.',
-            'REJECTED'
+            'REJECTED',
+            true
           );
         } else if (vector === 'xss') {
           logEvent(
@@ -519,7 +627,8 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
             '/portal/comentarios',
             'SIG-XSS-001',
             'Inyección XSS reflejada detectada: [<script>document.cookie</script>]. Sanitización forzada.',
-            'BLOCKED'
+            'BLOCKED',
+            true
           );
         }
 
@@ -527,15 +636,17 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // GET /api/sessions
+      // GET /api/sessions (Segregates Simulated Data by Default)
       // -----------------------------------------------------------------------
       if (method === 'GET' && pathname === '/api/sessions') {
         const limitParam = parsedUrl.searchParams.get('limit') || '50';
         const offsetParam = parsedUrl.searchParams.get('offset') || '0';
+        const includeSimulated = parsedUrl.searchParams.get('includeSimulated') === 'true';
+
         const limit = Math.min(Math.max(1, parseInt(limitParam, 10) || 50), 500);
         const offset = Math.max(0, parseInt(offsetParam, 10) || 0);
 
-        const sessions = db.getUserSessions(limit, offset);
+        const sessions = db.getUserSessions(limit, offset, includeSimulated);
         return sendJson(res, 200, sessions);
       }
 
@@ -550,6 +661,15 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
         if (!db.sessionExists(sessionId)) {
           return sendError(res, 404, 'Sesión no encontrada');
         }
+
+        const userId = (auth.user && auth.user.id) || 'usr-analyst';
+        db.insertAuditLog({
+          action: 'VIEW_SESSION',
+          userId,
+          ip: req.socket.remoteAddress || '127.0.0.1',
+          details: `Inspección de actividades para la sesión ${sessionId}`
+        });
+
         const activities = db.getSessionActivities(sessionId);
         return sendJson(res, 200, activities);
       }
@@ -625,7 +745,7 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // POST /api/sessions/simulate (DEMO_MODE Gated)
+      // POST /api/sessions/simulate (DEMO_MODE Gated, Tagged as is_simulated=1)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sessions/simulate') {
         if (!config.DEMO_MODE) {
@@ -648,10 +768,10 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
           ip_address: chosenIp,
           login_portal: chosenPortal,
           user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Edge/127.0.0.0'
-        });
+        }, true);
 
-        db.recordActivity(sessId, 'CONSULTA_DATOS', chosenPortal, 'Consulta de verificación realizada en el sistema.', 'NORMAL');
-        db.recordActivity(sessId, 'ACTUALIZACION_REGISTRO', '/api/registros/save', 'Validación de formulario de prueba completada.', 'NORMAL');
+        db.recordActivity(sessId, 'CONSULTA_DATOS', chosenPortal, 'Consulta de verificación realizada en el sistema.', 'NORMAL', true);
+        db.recordActivity(sessId, 'ACTUALIZACION_REGISTRO', '/api/registros/save', 'Validación de formulario de prueba completada.', 'NORMAL', true);
 
         return sendJson(res, 200, { success: true, sessionId: sessId, user: chosenUser });
       }

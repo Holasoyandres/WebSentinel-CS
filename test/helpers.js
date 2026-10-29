@@ -25,6 +25,7 @@ async function startTestServer(options = {}) {
     CORS_ORIGINS: ['*'],
     SCAN_ALLOWLIST: ['127.0.0.1', 'localhost'],
     RETENTION_DAYS: 30,
+    STORE_PASSED_EVENTS: true,
     LOG_LEVEL: 'silent',
     MAX_BODY_BYTES: 1048576,
     ...options.config

@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 
 const PUBLIC_API_PATHS = new Set([
   '/healthz',
+  '/readyz',
   '/api/auth/login'
 ]);
 

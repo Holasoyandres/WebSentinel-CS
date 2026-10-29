@@ -1,39 +1,67 @@
 /**
  * WebSentinel-CS :: Entry Point
- * Architecture: Standalone Out-of-Band Security Sentinel
- * Author: Holasoyandres (MIT License)
+ * Architecture: Standalone Out-of-Band Security Sentinel (FASE 2)
+ * Features: Structured logging, WAL database, and 10s graceful shutdown draining
  */
 
 const config = require('./src/config');
+const { createLogger } = require('./src/logger');
 const { createDatabase } = require('./src/db');
 const { createApp } = require('./src/app');
 
+const logger = createLogger(config.LOG_LEVEL);
 const db = createDatabase(config.DB_PATH);
 const { server } = createApp({ config, db });
 
 server.listen(config.PORT, config.HOST, () => {
-  console.log(`[WebSentinel-CS Engine] Daemon active: http://${config.HOST}:${config.PORT} (v${config.VERSION})`);
-  console.log(`[WebSentinel-CS Storage] SQLite Database: ${config.DB_PATH}`);
+  logger.info('WebSentinel-CS Daemon activo', {
+    version: config.VERSION,
+    host: config.HOST,
+    port: config.PORT,
+    dbPath: config.DB_PATH,
+    env: config.ENV
+  });
 });
 
-function handleShutdown() {
-  console.log('\n[WebSentinel-CS] Shutting down daemon cleanly...');
+let isShuttingDown = false;
+
+function handleShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  logger.info(`Señal ${signal} recibida: iniciando apagado ordenado...`, { timeoutMs: 10000 });
+
+  // Stop accepting new connections
   server.close(() => {
-    db.close();
-    console.log('[WebSentinel-CS] Server and database closed.');
-    process.exit(0);
+    try {
+      db.close();
+      logger.info('Servidor HTTP y base de datos SQLite cerrados limpiamente');
+      process.exit(0);
+    } catch (err) {
+      logger.error('Error al cerrar base de datos:', { error: err.message });
+      process.exit(1);
+    }
   });
+
+  // Force shutdown if active requests do not drain within 10 seconds
+  const forceTimer = setTimeout(() => {
+    logger.warn('Tiempo de espera de drenado (10s) agotado. Forzando terminación');
+    try { db.close(); } catch (_) {}
+    process.exit(1);
+  }, 10000);
+
+  if (forceTimer.unref) forceTimer.unref();
 }
 
-process.on('SIGINT', handleShutdown);
-process.on('SIGTERM', handleShutdown);
+process.on('SIGINT', () => handleShutdown('SIGINT'));
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
 process.on('uncaughtException', (err) => {
-  console.error('[WebSentinel-CS FATAL] Excepción no capturada:', err);
+  logger.error('Excepción no capturada en tiempo de ejecución', { error: err.message, stack: err.stack });
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[WebSentinel-CS FATAL] Rechazo no controlado de promesa:', reason);
+  logger.error('Rechazo no controlado de promesa', { reason: String(reason) });
   process.exit(1);
 });

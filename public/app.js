@@ -196,6 +196,7 @@ function renderSocTable() {
         <td style="color: var(--text-muted); font-size: 11px;">${timeFormatted}</td>
         <td>
           <span class="badge-sev badge-${validSev}">${validSev}</span>
+          ${ev.is_simulated ? '<span class="badge-sev" style="background: rgba(147, 51, 234, 0.15); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); margin-left: 4px; font-size: 10px;">SIMULADO</span>' : ''}
         </td>
         <td>
           <span class="rule-tag">${escapeHtml(ev.rule_id || 'RULE-GENERIC')}</span>
@@ -508,7 +509,10 @@ function renderSessionsTable(sessions) {
           <span class="badge-status badge-status-${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
         </td>
         <td>
-          <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(s.user_identifier)}</div>
+          <div style="font-weight: 600; color: var(--text-primary);">
+            ${escapeHtml(s.user_identifier)}
+            ${s.is_simulated ? '<span style="background: rgba(147, 51, 234, 0.15); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); font-size: 9px; padding: 1px 4px; border-radius: 3px; margin-left: 4px;">SIMULADO</span>' : ''}
+          </div>
           <div style="font-size: 9px; color: var(--text-muted);">${escapeHtml(s.role)}</div>
         </td>
         <td style="color: var(--color-info);">${escapeHtml(s.ip_address)}</td>

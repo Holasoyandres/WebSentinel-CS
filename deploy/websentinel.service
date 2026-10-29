@@ -1,0 +1,30 @@
+[Unit]
+Description=WebSentinel-CS Autonomous Cybersecurity & Telemetry Sentinel
+After=network.target
+
+[Service]
+Type=simple
+User=sentinel
+WorkingDirectory=/opt/websentinel
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=4000
+Environment=TRUST_PROXIES=true
+Environment=DB_PATH=/var/lib/websentinel/sentinel.sqlite
+ExecStart=/usr/bin/node /opt/websentinel/server.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=websentinel
+
+# Hardening Directives
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

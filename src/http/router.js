@@ -21,7 +21,7 @@ function createRouter({ config, handleApi, publicDir }) {
       return res.end();
     }
 
-    if (pathname.startsWith('/api/') || pathname === '/healthz') {
+    if (pathname.startsWith('/api/') || pathname === '/healthz' || pathname === '/readyz') {
       return handleApi(req, res, parsedUrl);
     }
 
