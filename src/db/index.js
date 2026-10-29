@@ -106,12 +106,19 @@ function createDatabase(dbPath) {
     );
 
     CREATE TABLE IF NOT EXISTS auth_sessions (
-      id TEXT PRIMARY KEY,
+      token_hash TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       csrf_token TEXT NOT NULL,
       expires_at DATETIME NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS login_rate_limits (
+      identifier TEXT PRIMARY KEY,
+      failures INTEGER DEFAULT 0,
+      locked_until DATETIME,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS admin_audit_log (
@@ -366,28 +373,31 @@ function createDatabase(dbPath) {
 
     createAuthSession(userId, ttlHours = 8) {
       try {
-        const sessionId = crypto.randomBytes(32).toString('hex');
+        const rawToken = crypto.randomBytes(32).toString('hex');
+        const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
         const csrfToken = crypto.randomBytes(24).toString('hex');
         const expiresAt = new Date(Date.now() + ttlHours * 3600 * 1000).toISOString();
         db.prepare(`
-          INSERT INTO auth_sessions (id, user_id, csrf_token, expires_at)
+          INSERT INTO auth_sessions (token_hash, user_id, csrf_token, expires_at)
           VALUES (?, ?, ?, ?)
-        `).run(sessionId, userId, csrfToken, expiresAt);
-        return { sessionId, csrfToken, expiresAt };
+        `).run(tokenHash, userId, csrfToken, expiresAt);
+        return { sessionId: rawToken, rawToken, tokenHash, csrfToken, expiresAt };
       } catch (err) {
         console.error('[DB Error] createAuthSession:', err.message);
         return null;
       }
     },
 
-    getAuthSession(sessionId) {
+    getAuthSession(rawToken) {
       try {
+        if (!rawToken || typeof rawToken !== 'string') return null;
+        const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
         const session = db.prepare(`
           SELECT s.*, u.username, u.role
           FROM auth_sessions s
           JOIN users u ON u.id = s.user_id
-          WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP
-        `).get(sessionId);
+          WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP
+        `).get(tokenHash);
         return session || null;
       } catch (err) {
         console.error('[DB Error] getAuthSession:', err.message);
@@ -395,14 +405,78 @@ function createDatabase(dbPath) {
       }
     },
 
-    deleteAuthSession(sessionId) {
+    deleteAuthSession(rawToken) {
       try {
-        db.prepare(`DELETE FROM auth_sessions WHERE id = ?`).run(sessionId);
+        if (!rawToken) return false;
+        const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+        db.prepare(`DELETE FROM auth_sessions WHERE token_hash = ?`).run(tokenHash);
         return true;
       } catch (err) {
         console.error('[DB Error] deleteAuthSession:', err.message);
         return false;
       }
+    },
+
+    purgeExpiredSessions() {
+      try {
+        db.prepare(`DELETE FROM auth_sessions WHERE expires_at <= CURRENT_TIMESTAMP`).run();
+      } catch (err) {
+        console.error('[DB Error] purgeExpiredSessions:', err.message);
+      }
+    },
+
+    checkLoginRateLimit(identifier) {
+      try {
+        const row = db.prepare(`SELECT * FROM login_rate_limits WHERE identifier = ?`).get(identifier);
+        if (row && row.locked_until) {
+          const lockTime = new Date(row.locked_until).getTime();
+          const now = Date.now();
+          if (lockTime > now) {
+            const retryAfterSec = Math.max(1, Math.ceil((lockTime - now) / 1000));
+            return { isLocked: true, retryAfterSec, failures: row.failures };
+          }
+        }
+        return { isLocked: false, retryAfterSec: 0, failures: row ? row.failures : 0 };
+      } catch (err) {
+        console.error('[DB Error] checkLoginRateLimit:', err.message);
+        return { isLocked: false, retryAfterSec: 0, failures: 0 };
+      }
+    },
+
+    recordLoginFailure(identifier, maxFailures = 5, lockMinutes = 15) {
+      try {
+        const row = db.prepare(`SELECT * FROM login_rate_limits WHERE identifier = ?`).get(identifier);
+        const currentFailures = (row ? row.failures : 0) + 1;
+        let lockedUntil = null;
+        let isLocked = false;
+        let retryAfterSec = 0;
+
+        if (currentFailures >= maxFailures) {
+          isLocked = true;
+          retryAfterSec = lockMinutes * 60;
+          lockedUntil = new Date(Date.now() + lockMinutes * 60 * 1000).toISOString();
+        }
+
+        db.prepare(`
+          INSERT INTO login_rate_limits (identifier, failures, locked_until, updated_at)
+          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(identifier) DO UPDATE SET
+            failures = ?,
+            locked_until = ?,
+            updated_at = CURRENT_TIMESTAMP
+        `).run(identifier, currentFailures, lockedUntil, currentFailures, lockedUntil);
+
+        return { isLocked, failures: currentFailures, retryAfterSec };
+      } catch (err) {
+        console.error('[DB Error] recordLoginFailure:', err.message);
+        return { isLocked: false, failures: 1, retryAfterSec: 0 };
+      }
+    },
+
+    resetLoginRateLimit(identifier) {
+      try {
+        db.prepare(`DELETE FROM login_rate_limits WHERE identifier = ?`).run(identifier);
+      } catch (_) {}
     },
 
     insertAuditLog({ userId, query, durationMs, rowsReturned }) {

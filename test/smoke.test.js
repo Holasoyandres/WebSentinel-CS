@@ -74,7 +74,9 @@ describe('WebSentinel-CS :: Smoke Tests (FASE 0)', () => {
     });
 
     it('GET /api/export-csv should return structured CSV file', async () => {
-      const res = await app.request('/api/export-csv');
+      const res = await app.request('/api/export-csv', {
+        headers: { Cookie: adminCookie }
+      });
       assert.equal(res.status, 200);
       assert.match(res.headers['content-type'], /text\/csv/);
       assert.match(res.body, /^ID,TIMESTAMP,SEVERITY/);
@@ -190,6 +192,7 @@ describe('WebSentinel-CS :: Smoke Tests (FASE 0)', () => {
     it('POST /api/simulate-attack should simulate SQLi vector cleanly', async () => {
       const res = await app.request('/api/simulate-attack', {
         method: 'POST',
+        headers: { Cookie: adminCookie, 'X-CSRF-Token': adminCsrfToken },
         body: { vector: 'sqli' }
       });
       assert.equal(res.status, 200);
@@ -200,6 +203,7 @@ describe('WebSentinel-CS :: Smoke Tests (FASE 0)', () => {
     it('POST /api/simulate-attack should simulate bruteforce vector cleanly', async () => {
       const res = await app.request('/api/simulate-attack', {
         method: 'POST',
+        headers: { Cookie: adminCookie, 'X-CSRF-Token': adminCsrfToken },
         body: { vector: 'bruteforce' }
       });
       assert.equal(res.status, 200);
@@ -267,6 +271,7 @@ describe('WebSentinel-CS :: Smoke Tests (FASE 0)', () => {
     it('POST /api/scan should audit self URL and return security score', async () => {
       const res = await app.request('/api/scan', {
         method: 'POST',
+        headers: { Cookie: adminCookie, 'X-CSRF-Token': adminCsrfToken },
         body: { url: app.baseUrl }
       });
       assert.equal(res.status, 200);
@@ -278,6 +283,7 @@ describe('WebSentinel-CS :: Smoke Tests (FASE 0)', () => {
     it('POST /api/scan should reject empty URL with 400', async () => {
       const res = await app.request('/api/scan', {
         method: 'POST',
+        headers: { Cookie: adminCookie, 'X-CSRF-Token': adminCsrfToken },
         body: {}
       });
       assert.equal(res.status, 400);
@@ -288,6 +294,7 @@ describe('WebSentinel-CS :: Smoke Tests (FASE 0)', () => {
     it('POST /api/simulate-attack with malformed JSON should return 400 and NOT crash server', async () => {
       const res = await app.request('/api/simulate-attack', {
         method: 'POST',
+        headers: { Cookie: adminCookie, 'X-CSRF-Token': adminCsrfToken },
         body: '{ malformed json: not valid...'
       });
       assert.equal(res.status, 400);

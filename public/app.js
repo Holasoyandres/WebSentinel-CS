@@ -86,7 +86,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// Discover session identity and CSRF token
+// Discover session identity, CSRF token, and DEMO_MODE visibility
 async function initAuthAndCsrf() {
   try {
     const res = await fetch('/api/auth/me');
@@ -94,6 +94,15 @@ async function initAuthAndCsrf() {
       const data = await res.json();
       if (data.session && data.session.csrf_token) {
         currentCsrfToken = data.session.csrf_token;
+      }
+      if (data.demoMode === false) {
+        // Hide simulation buttons and panels when DEMO_MODE is disabled
+        document.querySelectorAll('[data-attack-sim]').forEach(el => {
+          const panel = el.closest('.panel-box');
+          if (panel) panel.classList.add('hidden');
+        });
+        const btnSimSession = document.getElementById('btnSimulateSession');
+        if (btnSimSession) btnSimSession.style.display = 'none';
       }
     }
   } catch (_) {}

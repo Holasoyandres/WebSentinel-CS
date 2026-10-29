@@ -14,12 +14,13 @@ const config = {
   PORT: parseInt(env.PORT || '4000', 10),
   DB_PATH: env.DB_PATH || path.join(__dirname, '..', 'data', 'sentinel.sqlite'),
   DEMO_MODE: env.DEMO_MODE === 'true',
+  TRUST_PROXIES: env.TRUST_PROXIES === 'true',
   CORS_ORIGINS: env.CORS_ORIGINS
-    ? env.CORS_ORIGINS.split(',').map(s => s.trim())
+    ? env.CORS_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
     : ['http://127.0.0.1:4000', 'http://localhost:4000'],
   SCAN_ALLOWLIST: env.SCAN_ALLOWLIST
-    ? env.SCAN_ALLOWLIST.split(',').map(s => s.trim())
-    : ['127.0.0.1', 'localhost', '172.16.0.0/16'],
+    ? env.SCAN_ALLOWLIST.split(',').map(s => s.trim()).filter(Boolean)
+    : [], // Default is empty: private networks or local scanning must be explicitly declared in .env
   RETENTION_DAYS: parseInt(env.RETENTION_DAYS || '90', 10),
   LOG_LEVEL: env.LOG_LEVEL || 'info',
   MAX_BODY_BYTES: parseInt(env.MAX_BODY_BYTES || '1048576', 10) // 1 MB

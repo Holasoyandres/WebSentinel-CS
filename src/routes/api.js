@@ -1,6 +1,6 @@
 /**
- * WebSentinel-CS :: API Routes Handler (Hardenized P0 Architecture)
- * Dispatches and processes all /api/* endpoints with RBAC, CSRF, and Parameter Sanitization
+ * WebSentinel-CS :: API Routes Handler (Hardenized P1.1 Architecture)
+ * Dispatches and processes all /api/* endpoints with RBAC, CSRF, Permissions Matrix, and Brute-Force Throttling
  */
 
 const { parseJsonBody } = require('../http/body');
@@ -8,11 +8,15 @@ const { sendJson, sendError, sendCsv } = require('../http/respond');
 const { inspectPayload } = require('../engine/signatures');
 const { auditTargetUrl } = require('../engine/scanner');
 const { authenticateRequest, verifyScryptPassword } = require('../http/auth');
+const { verifyAuthorization } = require('../http/permissions');
 const { sanitizeAndValidateQuery, executeQueryWithWorker } = require('../engine/sql-runner');
 
 const ALLOWED_SEVERITY = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']);
 const ALLOWED_ACTIONS = new Set(['BLOCKED', 'FLAGGED', 'CHALLENGED', 'MONITORED', 'PASSED', 'LOGGED', 'AUDITED', 'DROPPED', 'IP_BLOCKED', 'REJECTED', 'AUTHORIZED']);
 const ALLOWED_RISK_LEVELS = new Set(['CRITICAL', 'HIGH', 'ELEVATED', 'MEDIUM', 'LOW', 'NORMAL']);
+
+const DUMMY_SALT = '00000000000000000000000000000000';
+const DUMMY_HASH = '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
 
 function getEffectiveClientIp(req, bodyIp, auth, config) {
   // Only trust declared body IP if authenticated via API Key with 'ingest' scope
@@ -65,27 +69,86 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // Public Route: POST /api/auth/login
+      // Public Route: POST /api/auth/login (Brute-Force & Timing Hardened)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/auth/login') {
         const body = await parseJsonBody(req, config.MAX_BODY_BYTES);
         const { username, password } = body;
-        if (!username || !password) {
-          return sendError(res, 400, 'Se requieren las credenciales de usuario y contraseña');
+
+        // Strict Type and Bounds Validation (Rejects objects with 400, never 500)
+        if (typeof username !== 'string' || typeof password !== 'string') {
+          return sendError(res, 400, 'Los campos de usuario y contraseña deben ser cadenas de texto');
         }
 
-        const user = db.findUserByUsername(username);
-        if (!user || !verifyScryptPassword(password, user.salt, user.password_hash)) {
+        const cleanUsername = username.trim();
+        if (cleanUsername.length < 1 || cleanUsername.length > 64 || password.length < 1 || password.length > 128) {
+          return sendError(res, 400, 'Longitud de credenciales fuera de rango permitido');
+        }
+
+        // Rate Limiting by IP and Username (5 failures / 15 minutes)
+        const clientIp = req.socket.remoteAddress || '127.0.0.1';
+        const ipKey = `ip:${clientIp}`;
+        const userKey = `user:${cleanUsername.toLowerCase()}`;
+
+        const ipLimit = db.checkLoginRateLimit(ipKey);
+        const userLimit = db.checkLoginRateLimit(userKey);
+
+        if (ipLimit.isLocked || userLimit.isLocked) {
+          const retrySec = Math.max(ipLimit.retryAfterSec || 0, userLimit.retryAfterSec || 0);
+          logEvent(
+            'AUTH_BRUTEFORCE',
+            'CRITICAL',
+            clientIp,
+            '/api/auth/login',
+            'RULE-RATE-001',
+            `Intento de fuerza bruta mitigado para usuario '${cleanUsername}'. IP bloqueada por ${retrySec}s.`,
+            'IP_BLOCKED'
+          );
+          res.setHeader('Retry-After', String(retrySec));
+          return sendError(res, 429, 'Demasiados intentos fallidos de autenticación. Intente más tarde.');
+        }
+
+        // Timing Attack Mitigation: Equalize CPU work with dummy scrypt
+        const user = db.findUserByUsername(cleanUsername);
+        let isValid = false;
+
+        if (!user) {
+          verifyScryptPassword(password, DUMMY_SALT, DUMMY_HASH);
+        } else {
+          isValid = verifyScryptPassword(password, user.salt, user.password_hash);
+        }
+
+        if (!isValid) {
+          const ipFail = db.recordLoginFailure(ipKey, 5, 15);
+          const userFail = db.recordLoginFailure(userKey, 5, 15);
+
+          if (ipFail.isLocked || userFail.isLocked) {
+            logEvent(
+              'AUTH_BRUTEFORCE',
+              'CRITICAL',
+              clientIp,
+              '/api/auth/login',
+              'RULE-RATE-001',
+              `Umbral de 5 fallos alcanzado para '${cleanUsername}'. Enfriamiento forzado por 15 minutos.`,
+              'IP_BLOCKED'
+            );
+          }
           return sendError(res, 401, 'Credenciales de acceso no válidas');
         }
 
+        // Successful Authentication: Reset Rate Limits
+        db.resetLoginRateLimit(ipKey);
+        db.resetLoginRateLimit(userKey);
+
         const session = db.createAuthSession(user.id, 8);
         if (!session) {
-          return sendError(res, 500, 'No fue posible iniciar la sesión de usuario');
+          return sendError(res, 500, 'No fue posible inicializar la sesión de analista');
         }
 
-        const isSecure = config.ENV === 'production' && req.socket.encrypted;
-        const cookieHeader = `sentinel_session=${session.sessionId}; Path=/; HttpOnly; SameSite=Strict${isSecure ? '; Secure' : ''}`;
+        const isTls = Boolean(req.socket.encrypted);
+        const isProxyHttps = (config.TRUST_PROXIES || process.env.TRUST_PROXIES === 'true') && req.headers['x-forwarded-proto'] === 'https';
+        const isSecure = config.ENV === 'production' && (isTls || isProxyHttps);
+        const cookieHeader = `sentinel_session=${session.rawToken}; Path=/; HttpOnly; SameSite=Strict${isSecure ? '; Secure' : ''}`;
 
         return sendJson(res, 200, {
           success: true,
@@ -95,13 +158,28 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // Centralized Authentication Check for All Other /api/* Endpoints
+      // Centralized Authentication Check for All Protected /api/* Endpoints
       // -----------------------------------------------------------------------
       const auth = authenticateRequest(req, db, pathname);
       if (!auth.authenticated) {
         return sendError(res, auth.statusCode || 401, auth.message || 'No autorizado');
       }
       req.auth = auth;
+
+      // -----------------------------------------------------------------------
+      // Centralized Permissions Matrix Enforcement (FASE 1.1)
+      // -----------------------------------------------------------------------
+      const authCheck = verifyAuthorization(auth, pathname, method);
+      if (!authCheck.allowed) {
+        return sendError(res, authCheck.statusCode || 403, authCheck.message);
+      }
+
+      // -----------------------------------------------------------------------
+      // Test Trigger Route: 500 Error Masking Verification
+      // -----------------------------------------------------------------------
+      if (pathname === '/api/test-500-trigger') {
+        throw new Error('Triggered deliberate internal exception for testing 500 response handling');
+      }
 
       // -----------------------------------------------------------------------
       // Auth Route: GET /api/auth/me
@@ -111,7 +189,8 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
           authenticated: true,
           type: auth.type,
           user: auth.user || null,
-          scopes: auth.scopes || null
+          scopes: auth.scopes || null,
+          demoMode: Boolean(config.DEMO_MODE)
         });
       }
 
@@ -120,7 +199,7 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/auth/logout') {
         if (auth.session) {
-          db.deleteAuthSession(auth.session.id);
+          db.deleteAuthSession(auth.session.rawToken || auth.session.token_hash);
         }
         const cookieHeader = 'sentinel_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0';
         return sendJson(res, 200, { success: true }, { 'Set-Cookie': cookieHeader });
@@ -171,7 +250,6 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       // POST /api/sql/query (Hardened SQL Forensics Console)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sql/query') {
-        // Strict RBAC: Only admin role allowed
         const userRole = (auth.user && auth.user.role) || auth.role;
         if (userRole !== 'admin') {
           return sendError(res, 403, 'Acceso denegado: La consola SQL requiere privilegios de administrador');
@@ -231,7 +309,7 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // POST /api/scan (SSRF-Protected URL Auditor)
+      // POST /api/scan (SSRF-Protected URL Auditor with CIDR & DNS Pinning)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/scan') {
         const body = await parseJsonBody(req, config.MAX_BODY_BYTES);
@@ -364,9 +442,13 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // POST /api/simulate-attack
+      // POST /api/simulate-attack (DEMO_MODE Gated)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/simulate-attack') {
+        if (!config.DEMO_MODE) {
+          return sendError(res, 404, 'Endpoint no disponible: DEMO_MODE está desactivado en la configuración');
+        }
+
         const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
         const vector = data.vector || 'sqli';
         const fakeIp = `198.51.100.${Math.floor(Math.random() * 200) + 10}`;
@@ -493,13 +575,17 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // POST /api/sessions/simulate
+      // POST /api/sessions/simulate (DEMO_MODE Gated)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/sessions/simulate') {
+        if (!config.DEMO_MODE) {
+          return sendError(res, 404, 'Endpoint no disponible: DEMO_MODE está desactivado en la configuración');
+        }
+
         const roles = ['USUARIO_OPERADOR', 'ADMINISTRADOR_PRUEBAS', 'ANALISTA_DEMO'];
         const users = ['usuario_demo_01@test.local', 'operador_prueba@test.local', 'admin_demo@test.local'];
         const portals = ['/portal/login', '/dashboard/panel', '/modulo/formularios'];
-        const ips = ['192.168.1.105', '10.0.0.45', '127.0.0.1'];
+        const ips = ['198.51.100.105', '198.51.100.45', '198.51.100.22'];
 
         const chosenRole = roles[Math.floor(Math.random() * roles.length)];
         const chosenUser = users[Math.floor(Math.random() * users.length)];

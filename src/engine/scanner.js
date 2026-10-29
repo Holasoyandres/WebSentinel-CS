@@ -1,6 +1,6 @@
 /**
  * WebSentinel-CS :: Remote Endpoint Security Auditor & SSRF Shield
- * Audits HTTP response headers against OWASP guidelines with strict SSRF filtering
+ * Audits HTTP response headers against OWASP guidelines with strict CIDR evaluation and DNS rebinding defense
  */
 
 const http = require('node:http');
@@ -8,67 +8,83 @@ const https = require('node:https');
 const dns = require('node:dns').promises;
 const net = require('node:net');
 
+function createRestrictedBlockList() {
+  const bl = new net.BlockList();
+  // IPv4 Private & Restricted
+  bl.addSubnet('0.0.0.0', 8, 'ipv4');          // Current network
+  bl.addSubnet('10.0.0.0', 8, 'ipv4');         // RFC 1918 Private
+  bl.addSubnet('100.64.0.0', 10, 'ipv4');      // Carrier-grade NAT
+  bl.addSubnet('127.0.0.0', 8, 'ipv4');        // Loopback
+  bl.addSubnet('169.254.0.0', 16, 'ipv4');     // Link-local / Cloud Metadata
+  bl.addSubnet('172.16.0.0', 12, 'ipv4');      // RFC 1918 Private
+  bl.addSubnet('192.0.2.0', 24, 'ipv4');       // Documentation TEST-NET-1
+  bl.addSubnet('192.168.0.0', 16, 'ipv4');     // RFC 1918 Private
+  bl.addSubnet('198.51.100.0', 24, 'ipv4');    // Documentation TEST-NET-2
+  bl.addSubnet('203.0.113.0', 24, 'ipv4');     // Documentation TEST-NET-3
+  bl.addSubnet('224.0.0.0', 4, 'ipv4');        // Multicast
+  bl.addSubnet('240.0.0.0', 4, 'ipv4');        // Reserved
+
+  // IPv6 Private & Restricted
+  bl.addAddress('::', 'ipv6');                 // Unspecified
+  bl.addAddress('::1', 'ipv6');                // Loopback
+  bl.addSubnet('fc00::', 7, 'ipv6');           // Unique Local Address (ULA)
+  bl.addSubnet('fe80::', 10, 'ipv6');          // Link-local
+  bl.addSubnet('ff00::', 8, 'ipv6');           // Multicast
+  return bl;
+}
+
+const RESTRICTED_BLOCKLIST = createRestrictedBlockList();
+
+function parseAllowlist(allowlist = []) {
+  const bl = new net.BlockList();
+  const hostnames = new Set();
+  let entriesCount = 0;
+
+  for (const item of allowlist) {
+    const trimmed = String(item).trim();
+    if (!trimmed) continue;
+    entriesCount++;
+
+    if (trimmed.includes('/')) {
+      const [ip, prefix] = trimmed.split('/');
+      const family = net.isIP(ip);
+      if (family === 4) bl.addSubnet(ip, parseInt(prefix, 10), 'ipv4');
+      else if (family === 6) bl.addSubnet(ip, parseInt(prefix, 10), 'ipv6');
+    } else {
+      const family = net.isIP(trimmed);
+      if (family === 4) bl.addAddress(trimmed, 'ipv4');
+      else if (family === 6) bl.addAddress(trimmed, 'ipv6');
+      else hostnames.add(trimmed.toLowerCase());
+    }
+  }
+
+  return { blockList: bl, hostnames, entriesCount };
+}
+
 function isIpRestricted(ip) {
   const family = net.isIP(ip);
   if (!family) return false;
-
-  if (family === 4) {
-    const parts = ip.split('.').map(Number);
-    // 0.0.0.0/8
-    if (parts[0] === 0) return true;
-    // Loopback: 127.0.0.0/8
-    if (parts[0] === 127) return true;
-    // Link-local / Cloud Metadata: 169.254.0.0/16
-    if (parts[0] === 169 && parts[1] === 254) return true;
-    // RFC 1918: 10.0.0.0/8
-    if (parts[0] === 10) return true;
-    // RFC 1918: 172.16.0.0/12
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-    // RFC 1918: 192.168.0.0/16
-    if (parts[0] === 192 && parts[1] === 168) return true;
-    // Carrier-grade NAT: 100.64.0.0/10
-    if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true;
-    // Documentation / Reserved: 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4 (multicast), 240.0.0.0/4 (reserved)
-    if (parts[0] >= 224) return true;
+  const familyType = family === 6 ? 'ipv6' : 'ipv4';
+  try {
+    return RESTRICTED_BLOCKLIST.check(ip, familyType);
+  } catch (_) {
     return false;
   }
+}
 
-  if (family === 6) {
-    const lower = ip.toLowerCase();
-    // Loopback ::1
-    if (lower === '::1' || lower === '0000:0000:0000:0000:0000:0000:0000:0001') return true;
-    // Unspecified ::
-    if (lower === '::') return true;
-    // IPv4-mapped IPv6 ::ffff:x.x.x.x
-    if (lower.startsWith('::ffff:')) {
-      const v4Part = lower.replace('::ffff:', '');
-      return isIpRestricted(v4Part);
-    }
-    // Unique Local (fc00::/7)
-    if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
-    // Link-local (fe80::/10)
-    if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true;
+function isIpAllowed(ip, parsedAllowlist) {
+  if (parsedAllowlist.entriesCount === 0) return false;
+  const family = net.isIP(ip);
+  if (!family) return false;
+  const familyType = family === 6 ? 'ipv6' : 'ipv4';
+  try {
+    return parsedAllowlist.blockList.check(ip, familyType);
+  } catch (_) {
     return false;
   }
-
-  return false;
 }
 
-function isHostAllowed(hostname, resolvedIps, allowlist = []) {
-  if (!allowlist || allowlist.length === 0) return false;
-  const lowerHost = hostname.toLowerCase();
-
-  for (const item of allowlist) {
-    const lowerItem = item.toLowerCase();
-    if (lowerHost === lowerItem) return true;
-    for (const ip of resolvedIps) {
-      if (ip === lowerItem) return true;
-    }
-  }
-  return false;
-}
-
-async function resolveAndValidateUrl(targetUrl, allowlist = []) {
+async function resolveAndValidateUrl(targetUrl, rawAllowlist = []) {
   let parsedUrl;
   try {
     parsedUrl = new URL(targetUrl);
@@ -80,9 +96,11 @@ async function resolveAndValidateUrl(targetUrl, allowlist = []) {
   }
 
   const hostname = parsedUrl.hostname;
+  const parsedAllow = parseAllowlist(rawAllowlist);
+
   let resolvedIps = [];
 
-  // Check if hostname is already a literal IP address
+  // Check if hostname is already a literal IP
   if (net.isIP(hostname)) {
     resolvedIps = [hostname];
   } else {
@@ -98,10 +116,11 @@ async function resolveAndValidateUrl(targetUrl, allowlist = []) {
     return { error: `No se obtuvieron direcciones IP para el host ${hostname}` };
   }
 
-  const allowed = isHostAllowed(hostname, resolvedIps, allowlist);
+  const hostIsExplicitlyAllowed = parsedAllow.hostnames.has(hostname.toLowerCase());
 
-  if (!allowed) {
-    for (const ip of resolvedIps) {
+  for (const ip of resolvedIps) {
+    const ipIsAllowed = isIpAllowed(ip, parsedAllow);
+    if (!hostIsExplicitlyAllowed && !ipIsAllowed) {
       if (isIpRestricted(ip)) {
         return {
           error: `SSRF bloqueado: Destino IP restringido (${ip}) no autorizado en SCAN_ALLOWLIST`
@@ -110,7 +129,7 @@ async function resolveAndValidateUrl(targetUrl, allowlist = []) {
     }
   }
 
-  return { parsedUrl, resolvedIps };
+  return { parsedUrl, pinnedIp: resolvedIps[0] };
 }
 
 async function auditTargetUrl(targetUrl, allowlist = [], maxRedirects = 3, timeoutMs = 5000) {
@@ -123,15 +142,43 @@ async function auditTargetUrl(targetUrl, allowlist = [], maxRedirects = 3, timeo
       return { error: validation.error };
     }
 
-    const { parsedUrl } = validation;
+    const { parsedUrl, pinnedIp } = validation;
     const client = parsedUrl.protocol === 'https:' ? https : http;
     const startTime = Date.now();
+    const pinnedFamily = net.isIP(pinnedIp);
+
+    const requestOptions = {
+      protocol: parsedUrl.protocol,
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      timeout: timeoutMs,
+      headers: {
+        Host: parsedUrl.host,
+        'User-Agent': 'WebSentinel-Audit-Engine/1.3.0',
+        Accept: '*/*'
+      },
+      servername: parsedUrl.hostname, // TLS SNI
+      // Anti-DNS Rebinding: Pin connection directly to pre-validated IP
+      lookup: (host, opts, cb) => {
+        if (typeof opts === 'function') {
+          cb = opts;
+          opts = {};
+        }
+        const familyNum = pinnedFamily === 6 ? 6 : 4;
+        if (opts && opts.all) {
+          cb(null, [{ address: pinnedIp, family: familyNum }]);
+        } else {
+          cb(null, pinnedIp, familyNum);
+        }
+      }
+    };
 
     const result = await new Promise((resolve) => {
       let isSettled = false;
 
-      const req = client.get(parsedUrl, { timeout: timeoutMs }, (res) => {
-        // Handle HTTP Redirection
+      const req = client.get(requestOptions, (res) => {
+        // Handle HTTP Redirections with re-validation
         if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
           req.destroy();
           const nextUrl = new URL(res.headers.location, currentUrl).toString();

@@ -1,7 +1,9 @@
 /**
  * WebSentinel-CS :: HTTP Response Utilities
- * Centralized response handlers with OWASP recommended security headers and strict CORS
+ * Centralized response handlers with OWASP recommended security headers, strict CORS, and 500 error masking
  */
+
+const crypto = require('node:crypto');
 
 function setSecurityHeaders(res) {
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self' data:; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
@@ -34,11 +36,21 @@ function sendJson(res, statusCode, data, extraHeaders = {}) {
 }
 
 function sendError(res, statusCode, message, extra = {}) {
+  let clientMessage = message;
+  let errorId;
+
+  if (statusCode >= 500) {
+    errorId = crypto.randomUUID();
+    console.error(`[WebSentinel-CS Internal Error ${errorId}]:`, message);
+    clientMessage = 'Error interno del servidor';
+  }
+
   sendJson(res, statusCode, {
     success: false,
     error: true,
-    message,
+    message: clientMessage,
     statusCode,
+    ...(errorId ? { errorId } : {}),
     ...extra
   });
 }

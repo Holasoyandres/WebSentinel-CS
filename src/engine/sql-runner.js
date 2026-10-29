@@ -1,6 +1,6 @@
 /**
  * WebSentinel-CS :: SQL Hardening & Execution Engine
- * Validates single SELECT, wraps with limit, executes in worker thread with 3s timeout
+ * Validates single SELECT or WITH (CTE), blocks credential tables, executes in worker thread
  */
 
 const { Worker } = require('node:worker_threads');
@@ -9,6 +9,10 @@ const path = require('node:path');
 const FORBIDDEN_SQL_KEYWORDS = [
   'ATTACH', 'DETACH', 'PRAGMA', 'INSERT', 'UPDATE', 'DELETE',
   'DROP', 'ALTER', 'CREATE', 'VACUUM', 'REINDEX', 'REPLACE'
+];
+
+const SENSITIVE_TABLES = [
+  'users', 'auth_sessions', 'api_keys', 'admin_audit_log', 'login_rate_limits'
 ];
 
 function sanitizeAndValidateQuery(rawQuery) {
@@ -32,9 +36,9 @@ function sanitizeAndValidateQuery(rawQuery) {
     throw new Error('Solo se permite una única consulta SQL (sin punto y coma adicional)');
   }
 
-  // Must begin with SELECT
-  if (!/^\s*SELECT\b/i.test(clean)) {
-    throw new Error('Solo se permiten consultas de lectura que inicien con SELECT');
+  // Must begin with SELECT or WITH
+  if (!/^\s*(SELECT|WITH)\b/i.test(clean)) {
+    throw new Error('Solo se permiten consultas de lectura que inicien con SELECT o WITH');
   }
 
   // Check forbidden keywords as separate words
@@ -45,16 +49,42 @@ function sanitizeAndValidateQuery(rawQuery) {
     }
   }
 
+  // Defense-in-depth: check sensitive credential tables
+  for (const tbl of SENSITIVE_TABLES) {
+    const re = new RegExp(`\\b${tbl}\\b`, 'i');
+    if (re.test(clean)) {
+      throw new Error(`Acceso denegado: La tabla '${tbl}' contiene secretos internos y está restringida`);
+    }
+  }
+
   return clean;
 }
 
-function executeQueryWithWorker(dbPath, cleanQuery, dbFallback = null, timeoutMs = 3000) {
-  const wrapped = `SELECT * FROM (${cleanQuery}) LIMIT 1000`;
+function wrapQueryWithLimit(cleanQuery) {
+  if (/^\s*WITH\b/i.test(cleanQuery)) {
+    if (!/\bLIMIT\s+\d+/i.test(cleanQuery)) {
+      return `${cleanQuery} LIMIT 1000`;
+    }
+    return cleanQuery;
+  }
+  return `SELECT * FROM (${cleanQuery}) LIMIT 1000`;
+}
 
-  // If in-memory, worker thread would open a different empty DB, so execute via fallback with query_only
+function executeQueryWithWorker(dbPath, cleanQuery, dbFallback = null, timeoutMs = 3000) {
+  const wrapped = wrapQueryWithLimit(cleanQuery);
+
+  // If in-memory, worker thread would open a different empty DB, so execute via fallback with query_only and authorizer
   if (dbPath === ':memory:' && dbFallback) {
     return new Promise((resolve) => {
       try {
+        if (dbFallback.raw && typeof dbFallback.raw.setAuthorizer === 'function') {
+          dbFallback.raw.setAuthorizer((action, arg1) => {
+            if (arg1 && SENSITIVE_TABLES.includes(String(arg1).toLowerCase())) {
+              return 1; // SQLITE_DENY
+            }
+            return 0; // SQLITE_OK
+          });
+        }
         const rows = dbFallback.runReadOnlyQuery(wrapped);
         resolve({ success: true, rows });
       } catch (err) {
@@ -111,5 +141,6 @@ function executeQueryWithWorker(dbPath, cleanQuery, dbFallback = null, timeoutMs
 
 module.exports = {
   sanitizeAndValidateQuery,
+  wrapQueryWithLimit,
   executeQueryWithWorker
 };

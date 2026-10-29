@@ -298,7 +298,8 @@ describe('WebSentinel-CS :: FASE 1 - Seguridad Crítica (P0)', () => {
       const res = await ctx.request('/api/scan', {
         method: 'POST',
         headers: {
-          'X-Sentinel-Key': testApiKey,
+          Cookie: adminSessionCookie,
+          'X-CSRF-Token': adminCsrfToken,
           'Content-Type': 'application/json'
         },
         body: { url: 'http://127.0.0.1:8080/internal' }
@@ -311,7 +312,8 @@ describe('WebSentinel-CS :: FASE 1 - Seguridad Crítica (P0)', () => {
       const res = await ctx.request('/api/scan', {
         method: 'POST',
         headers: {
-          'X-Sentinel-Key': testApiKey,
+          Cookie: adminSessionCookie,
+          'X-CSRF-Token': adminCsrfToken,
           'Content-Type': 'application/json'
         },
         body: { url: 'http://169.254.169.254/latest/meta-data/' }
@@ -324,7 +326,8 @@ describe('WebSentinel-CS :: FASE 1 - Seguridad Crítica (P0)', () => {
       const res = await ctx.request('/api/scan', {
         method: 'POST',
         headers: {
-          'X-Sentinel-Key': testApiKey,
+          Cookie: adminSessionCookie,
+          'X-CSRF-Token': adminCsrfToken,
           'Content-Type': 'application/json'
         },
         body: { url: 'http://10.0.0.1/admin' }
