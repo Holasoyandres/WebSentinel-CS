@@ -18,8 +18,8 @@ if (!username || !password) {
   process.exit(1);
 }
 
-if (!['admin', 'analyst'].includes(role)) {
-  console.error('Rol inválido. Debe ser "admin" o "analyst".');
+if (!['admin', 'analyst', 'viewer'].includes(role)) {
+  console.error('Rol inválido. Debe ser "admin", "analyst" o "viewer".');
   process.exit(1);
 }
 
@@ -33,24 +33,23 @@ try {
   db.raw.prepare(`
     INSERT INTO users (id, username, password_hash, salt, role, created_at)
     VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(username) DO UPDATE SET
+      password_hash = excluded.password_hash,
+      salt = excluded.salt,
+      role = excluded.role
   `).run(userId, username, passwordHash, salt, role);
 
   console.log(`
 ===================================================================
 WebSentinel-CS :: Usuario de Panel Registrado Exitosamente
 ===================================================================
-ID Usuario: ${userId}
 Usuario:    ${username}
 Rol:        ${role}
 Cifrado:    scrypt (N=16384, r=8, p=1, length=64)
 ===================================================================
 `);
 } catch (err) {
-  if (err.message.includes('UNIQUE constraint failed')) {
-    console.error(`Error: El usuario "${username}" ya existe en el sistema.`);
-  } else {
-    console.error('[Error al crear usuario]:', err.message);
-  }
+  console.error('[Error al crear/actualizar usuario]:', err.message);
   process.exit(1);
 } finally {
   db.close();
