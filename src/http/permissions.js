@@ -6,6 +6,7 @@
 const SCOPE_PERMISSIONS = {
   ingest: new Set([
     'POST:/api/analyze-request',
+    'POST:/api/v1/events',
     'POST:/api/record-login',
     'POST:/api/sessions/login',
     'POST:/api/sessions/activity',
@@ -45,6 +46,7 @@ const ROLE_PERMISSIONS = {
     'POST:/api/scan',
     'GET:/api/export-csv',
     'POST:/api/analyze-request',
+    'POST:/api/v1/events',
     'POST:/api/simulate-attack',
     'POST:/api/sessions/simulate'
   ]),

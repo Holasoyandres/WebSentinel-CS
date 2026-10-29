@@ -1,6 +1,9 @@
 # Runtime database & logs
 data/*.sqlite
+data/*.sqlite-*
 data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
 *.log
 
 # OS & Node

@@ -440,7 +440,7 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
       }
 
       // -----------------------------------------------------------------------
-      // POST /api/analyze-request (WAF with Configurable Retention)
+      // POST /api/analyze-request (WAF Anomaly Scoring & Inspection)
       // -----------------------------------------------------------------------
       if (method === 'POST' && pathname === '/api/analyze-request') {
         const data = await parseJsonBody(req, config.MAX_BODY_BYTES);
@@ -449,21 +449,36 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
         const clientIp = getEffectiveClientIp(req, data.clientIp, auth, config);
         const target = data.targetEndpoint || '/api/v1/resource';
 
-        const threats = inspectPayload(input, honeypot);
+        const threshold = config.ANOMALY_THRESHOLD || 5;
+        const inspection = inspectPayload(input, honeypot, threshold);
 
         let recordedIncidentId = null;
 
-        if (threats.length > 0) {
+        if (inspection.action === 'BLOCK') {
           db.incrementDailyInspection(true);
-          for (const t of threats) {
+          for (const t of inspection.triggeredRules) {
             const ev = logEvent(
               'INJECTION_THREAT',
               t.severity,
               clientIp,
               target,
-              t.ruleId,
-              `${t.name} (${t.cwe}). Muestra: "${input.substring(0, 48)}"`,
+              t.id,
+              `${t.name} (${t.cwe}). Muestra: "${String(input).substring(0, 48)}"`,
               'BLOCKED'
+            );
+            if (!recordedIncidentId) recordedIncidentId = ev.id;
+          }
+        } else if (inspection.action === 'FLAG') {
+          db.incrementDailyInspection(true);
+          for (const t of inspection.triggeredRules) {
+            const ev = logEvent(
+              'SUSPICIOUS_PAYLOAD',
+              t.severity,
+              clientIp,
+              target,
+              t.id,
+              `Anomalía sospechosa detectada: ${t.name} (${t.cwe}). Puntaje: ${t.score}/${threshold}`,
+              'FLAGGED'
             );
             if (!recordedIncidentId) recordedIncidentId = ev.id;
           }
@@ -484,10 +499,87 @@ function createApiHandler({ config, db, rateLimiter, stats }) {
         }
 
         return sendJson(res, 200, {
-          safe: threats.length === 0,
-          threatCount: threats.length,
-          threats,
+          safe: inspection.safe,
+          action: inspection.action,
+          status: inspection.status,
+          scoreTotal: inspection.scoreTotal,
+          threshold: inspection.threshold,
+          threatCount: inspection.threatCount,
+          threats: inspection.threats,
+          triggeredRules: inspection.triggeredRules,
           incidentId: recordedIncidentId
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // POST /api/v1/events (Dedicated Ingestion Endpoint for Pre-Analyzed Events)
+      // -----------------------------------------------------------------------
+      if (method === 'POST' && pathname === '/api/v1/events') {
+        const body = await parseJsonBody(req, config.MAX_BODY_BYTES);
+
+        const { type, severity, ruleId, sourceIp, target, details, action, isSimulated } = body;
+
+        // Strict Schema & Type Validation
+        if (
+          typeof type !== 'string' ||
+          typeof severity !== 'string' ||
+          typeof ruleId !== 'string' ||
+          typeof sourceIp !== 'string' ||
+          typeof target !== 'string' ||
+          typeof details !== 'string' ||
+          typeof action !== 'string'
+        ) {
+          return sendError(res, 400, 'Esquema de evento inválido: todos los campos obligatorios deben ser cadenas de texto');
+        }
+
+        const cleanType = type.trim();
+        const cleanSev = severity.toUpperCase().trim();
+        const cleanRuleId = ruleId.trim();
+        const cleanSourceIp = sourceIp.trim();
+        const cleanTarget = target.trim();
+        const cleanDetails = details.trim();
+        const cleanAction = action.toUpperCase().trim();
+
+        if (
+          cleanType.length < 1 || cleanType.length > 64 ||
+          cleanRuleId.length < 1 || cleanRuleId.length > 64 ||
+          cleanSourceIp.length < 1 || cleanSourceIp.length > 64 ||
+          cleanTarget.length < 1 || cleanTarget.length > 255 ||
+          cleanDetails.length < 1 || cleanDetails.length > 65535
+        ) {
+          return sendError(res, 400, 'Longitud de campos de evento fuera del rango permitido');
+        }
+
+        if (!ALLOWED_SEVERITY.has(cleanSev)) {
+          return sendError(res, 400, `Nivel de severidad inválido: "${cleanSev}". Valores permitidos: ${Array.from(ALLOWED_SEVERITY).join(', ')}`);
+        }
+
+        if (!ALLOWED_ACTIONS.has(cleanAction)) {
+          return sendError(res, 400, `Acción inválida: "${cleanAction}". Valores permitidos: ${Array.from(ALLOWED_ACTIONS).join(', ')}`);
+        }
+
+        const event = {
+          id: 'SEC-' + crypto.randomUUID(),
+          timestamp: new Date().toISOString(),
+          type: cleanType,
+          severity: cleanSev,
+          sourceIp: cleanSourceIp,
+          target: cleanTarget,
+          ruleId: cleanRuleId,
+          details: cleanDetails,
+          action: cleanAction,
+          isSimulated: Boolean(isSimulated)
+        };
+
+        db.insertIncident(event);
+
+        if (!event.isSimulated && (cleanSev === 'CRITICAL' || cleanSev === 'HIGH')) {
+          stats.threatsDetected++;
+        }
+
+        return sendJson(res, 201, {
+          success: true,
+          eventId: event.id
         });
       }
 

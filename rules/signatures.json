@@ -1,0 +1,132 @@
+[
+  {
+    "id": "SIG-SQLI-001",
+    "name": "SQL Injection: Tautology / Boolean Bypass",
+    "category": "sqli",
+    "regex": "(?:'|\"|\\b)(?:OR|AND)\\b\\s*[^=<>!\\s]+\\s*(?:=|<>|!=|<|>|LIKE|ILIKE)\\s*[^=<>!\\s]+",
+    "severity": "CRITICAL",
+    "cwe": "CWE-89",
+    "score": 5,
+    "description": "Tautological logic bypass attempting to force true predicate conditions"
+  },
+  {
+    "id": "SIG-SQLI-002",
+    "name": "SQL Injection: UNION-Based Exfiltration",
+    "category": "sqli",
+    "regex": "\\bUNION\\b(?:\\s+ALL)?\\s+\\bSELECT\\b",
+    "severity": "CRITICAL",
+    "cwe": "CWE-89",
+    "score": 5,
+    "description": "UNION SELECT statement used to append unauthorized data from other tables"
+  },
+  {
+    "id": "SIG-SQLI-003",
+    "name": "SQL Injection: Comment / Stacked Query Termination",
+    "category": "sqli",
+    "regex": "(?:(?:'|\"|\\b(?:SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|HAVING|ORDER\\s+BY|GROUP\\s+BY|UNION))\\s*[^;]*?--|;\\s*(?:DROP|ALTER|INSERT|UPDATE|DELETE|EXEC(?:UTE)?|SHUTDOWN)\\b|--\\s*$)",
+    "severity": "CRITICAL",
+    "cwe": "CWE-89",
+    "score": 5,
+    "description": "SQL statement termination via comments or stacked administrative commands"
+  },
+  {
+    "id": "SIG-SQLI-004",
+    "name": "SQL Injection: Time Delay & Benchmark Functions",
+    "category": "sqli",
+    "regex": "\\b(?:SLEEP|BENCHMARK|WAITFOR\\s+DELAY|PG_SLEEP)\\s*\\(",
+    "severity": "CRITICAL",
+    "cwe": "CWE-89",
+    "score": 5,
+    "description": "Time-based blind SQL injection probing database latency"
+  },
+  {
+    "id": "SIG-SQLI-005",
+    "name": "SQL Injection: System Metadata & Fingerprinting",
+    "category": "sqli",
+    "regex": "(?:@@version|\\bversion\\s*\\(\\s*\\)|\\buser\\s*\\(\\s*\\)|\\bcurrent_user\\b|\\bschema\\s*\\(\\s*\\))",
+    "severity": "HIGH",
+    "cwe": "CWE-89",
+    "score": 4,
+    "description": "Probing internal database system metadata and active credentials"
+  },
+  {
+    "id": "SIG-SQLI-006",
+    "name": "SQL Injection: Conditional Logic & Case Statements",
+    "category": "sqli",
+    "regex": "\\bCASE\\b[\\s\\S]+?\\bWHEN\\b[\\s\\S]+?\\bTHEN\\b[\\s\\S]+?\\bEND\\b",
+    "severity": "HIGH",
+    "cwe": "CWE-89",
+    "score": 4,
+    "description": "Conditional CASE/WHEN constructs used for blind data extraction"
+  },
+  {
+    "id": "SIG-XSS-001",
+    "name": "Cross-Site Scripting: Script Tag Injection",
+    "category": "xss",
+    "regex": "<script\\b[^>]*>[\\s\\S]*?(?:<\\/script>|$)",
+    "severity": "HIGH",
+    "cwe": "CWE-79",
+    "score": 5,
+    "description": "Explicit script execution container injected in HTML context"
+  },
+  {
+    "id": "SIG-XSS-002",
+    "name": "Cross-Site Scripting: Inline Event Handler",
+    "category": "xss",
+    "regex": "\\bon[a-z]{3,20}\\s*=",
+    "severity": "CRITICAL",
+    "cwe": "CWE-79",
+    "score": 5,
+    "description": "HTML inline event handler attribute (onload, onerror, onanimationstart, etc.)"
+  },
+  {
+    "id": "SIG-XSS-003",
+    "name": "Cross-Site Scripting: JavaScript / Data URI Scheme",
+    "category": "xss",
+    "regex": "(?:javascript\\s*:|data\\s*:\\s*text\\/html)",
+    "severity": "HIGH",
+    "cwe": "CWE-79",
+    "score": 4,
+    "description": "Executable pseudo-protocol invocation in href/src attributes"
+  },
+  {
+    "id": "SIG-XSS-004",
+    "name": "Cross-Site Scripting: Dynamic Tag Injection (SVG/Iframe/Object)",
+    "category": "xss",
+    "regex": "<(?:svg|iframe|embed|object|base|img|body|input)\\b[^>]*[\\s/](?:on[a-z]+|src|href)\\s*=",
+    "severity": "CRITICAL",
+    "cwe": "CWE-79",
+    "score": 5,
+    "description": "Vector delivery via SVG, iframe, or plugin objects with active handlers"
+  },
+  {
+    "id": "SIG-PATH-001",
+    "name": "Path Traversal: Directory Climb Sequence",
+    "category": "path_traversal",
+    "regex": "(?:\\.\\.[\\/\\\\]|%2e%2e[\\/\\\\])",
+    "severity": "HIGH",
+    "cwe": "CWE-22",
+    "score": 4,
+    "description": "Parent directory navigation attempting boundary evasion"
+  },
+  {
+    "id": "SIG-PATH-002",
+    "name": "LFI: Sensitive Configuration File Target",
+    "category": "path_traversal",
+    "regex": "(?:(?:^|[\\/\\\\])(?:etc\\/passwd|win\\.ini|boot\\.ini|\\.env(?:\\.[a-z0-9_-]+)?|\\.git(?:[\\/\\\\].*)?)(?:$|[\\s\\/?#]))",
+    "severity": "CRITICAL",
+    "cwe": "CWE-22",
+    "score": 5,
+    "description": "Direct targeting of system configuration, environment secrets, or version control repositories"
+  },
+  {
+    "id": "SIG-CMD-001",
+    "name": "Command Injection: Pipeline & Chained Shell Execution",
+    "category": "cmd_injection",
+    "regex": "(?:(?:;|\\|\\||\\||&)\\s*(?:cat\\s+|whoami\\b|id\\b|uname\\b|dir\\b|ls\\b|netstat\\b|curl\\b|wget\\b|bash\\b|sh\\b|powershell\\b|cmd(?:\\.exe)?\\b)|\\b(?:cat|whoami|id|uname|ls)\\b\\s*\\||`[^`]+`|\\$\\([^\\)]+\\))",
+    "severity": "CRITICAL",
+    "cwe": "CWE-78",
+    "score": 5,
+    "description": "Shell control operators chaining arbitrary operating system commands"
+  }
+]
