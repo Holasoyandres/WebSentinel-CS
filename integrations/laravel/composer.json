@@ -1,7 +1,7 @@
 {
   "name": "websentinel/laravel-sentinel",
-  "description": "Enterprise Web Security Middleware & Out-of-Band Threat Telemetry for Laravel",
-  "keywords": ["laravel", "security", "waf", "sqli", "xss", "bruteforce", "cybersecurity"],
+  "description": "Enterprise Web Security Middleware & Out-of-Band Threat Telemetry for Laravel 10/11/12",
+  "keywords": ["laravel", "security", "waf", "sqli", "xss", "bruteforce", "cybersecurity", "soc", "honeypot"],
   "license": "MIT",
   "type": "library",
   "authors": [
@@ -12,12 +12,20 @@
   ],
   "require": {
     "php": "^8.1 || ^8.2 || ^8.3 || ^8.4",
-    "illuminate/support": "^10.0 || ^11.0",
-    "illuminate/http": "^10.0 || ^11.0"
+    "illuminate/support": "^10.0 || ^11.0 || ^12.0",
+    "illuminate/http": "^10.0 || ^11.0 || ^12.0",
+    "illuminate/auth": "^10.0 || ^11.0 || ^12.0",
+    "illuminate/events": "^10.0 || ^11.0 || ^12.0",
+    "symfony/http-foundation": "^6.0 || ^7.0"
   },
   "autoload": {
     "psr-4": {
       "WebSentinel\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "WebSentinel\\Tests\\": "tests/"
     }
   },
   "extra": {
