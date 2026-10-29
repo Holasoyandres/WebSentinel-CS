@@ -150,6 +150,7 @@ La suite [`test/corpus.test.js`](test/corpus.test.js) audita la efectividad cont
 - 📖 **[Especificación de la API REST (docs/API.md)](docs/API.md)**: Detalle completo de endpoints, parámetros, cabeceras, códigos HTTP y ejemplos JSON.
 - 🚀 **[Guía de Despliegue en Producción (docs/DEPLOY.md)](docs/DEPLOY.md)**: Instrucciones paso a paso para Linux (systemd + Nginx con SSE), Windows Server (NSSM) y PM2.
 - 🐘 **[Guía de Integración Laravel (integrations/laravel/README.md)](integrations/laravel/README.md)**: Configuración para Laravel 10, 11 y 12.
+- 📜 **[Historial Completo de Conversación y Auditoría (docs/HISTORIAL_COMPLETO_CHAT.md)](docs/HISTORIAL_COMPLETO_CHAT.md)**: Registro íntegro de la conversación, auditorías de seguridad, prompts, decisiones técnicas e iteraciones de desarrollo.
 
 ---
 
