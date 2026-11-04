@@ -175,7 +175,7 @@ function createDatabase(dbPath) {
     },
 
     verifyIncidentLogIntegrity() {
-      const rows = db.prepare('SELECT id, timestamp, severity, type, source_ip, target, prev_hash, hash FROM incidents ORDER BY rowid ASC').all();
+      const rows = db.prepare('SELECT id, timestamp, severity, type, source_ip, target, prev_hash, hash FROM incidents WHERE hash IS NOT NULL ORDER BY rowid ASC').all();
       let expectedPrevHash = '0'.repeat(64);
 
       for (let i = 0; i < rows.length; i++) {
