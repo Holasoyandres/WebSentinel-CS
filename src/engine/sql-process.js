@@ -11,7 +11,8 @@ const SENSITIVE_TABLES = new Set([
   'auth_sessions',
   'api_keys',
   'admin_audit_log',
-  'login_rate_limits'
+  'login_rate_limits',
+  'integrity_checkpoints'
 ]);
 
 process.on('message', (msg) => {

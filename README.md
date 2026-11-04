@@ -1,12 +1,12 @@
 # WebSentinel-CS :: Enterprise Security Operations & Telemetry Sentinel
 
-[![Node.js Engine](https://img.shields.io/badge/Node.js-v20%2B%20%7C%20v22%20%7C%20v24-22c55e?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Node.js Engine](https://img.shields.io/badge/Node.js-v22%20%7C%20v24-22c55e?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Laravel Integration](https://img.shields.io/badge/Laravel-10%20%7C%2011%20%7C%2012%20Ready-FF2D20?logo=laravel&logoColor=white)](integrations/laravel/)
 [![Database Engine](https://img.shields.io/badge/Database-SQLite%20(Native%20SQL)-003B57?logo=sqlite&logoColor=white)](data/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-3b82f6.svg)](LICENSE)
 [![Standards Compliance](https://img.shields.io/badge/Standard-OWASP%20Top%2010%20%7C%20CWE-0f172a)](https://owasp.org/)
 [![Dependency Footprint](https://img.shields.io/badge/Dependencies-0%20(Pure%20Native%20Runtime)-059669)](package.json)
-[![Tests Passing](https://img.shields.io/badge/Tests-172%2F172%20Passing-success)](test/)
+[![Tests Passing](https://img.shields.io/badge/Tests-173%2F173%20Passing-success)](test/)
 
 **WebSentinel-CS** es una plataforma centinela, consola de operaciones de seguridad (SOC) en tiempo real y cortafuegos de aplicaciones web (WAF) heurístico para ecosistemas **Node.js, Laravel (PHP) y bases de datos SQL**. Diseñada para inspección profunda de tráfico, detección de anomalías OWASP CRS, mitigación de fuerza bruta y auditoría forense con encadenamiento criptográfico SHA-256.
 
@@ -91,13 +91,13 @@ Construida con una filosofía de **cero dependencias externas en tiempo de ejecu
 
 | Característica | Detalle |
 | :--- | :--- |
-| **Runtime** | Node.js v20.x, v22.x LTS o v24.x |
+| **Runtime** | Node.js v22.x LTS o v24.x |
 | **Dependencias en Runtime** | **0 (Cero dependencias npm)** |
 | **Tiempo de Arranque** | < 60 ms |
 | **Consumo de Memoria** | ~28 MB RSS |
 | **Motor de Almacenamiento** | SQLite nativo en modo WAL con migraciones automáticas |
 | **Criptografía** | Módulo `crypto` de Node.js (`SHA-256`, `scrypt`, `timingSafeEqual`) |
-| **Cobertura de Pruebas** | 172 tests unitarios e integrados passing al 100% |
+| **Cobertura de Pruebas** | 173 tests unitarios e integrados passing al 100% |
 
 ---
 
@@ -133,7 +133,7 @@ http://127.0.0.1:4000
 WebSentinel-CS incluye una suite exhaustiva de pruebas usando el corredor nativo `node --test` y `php`:
 
 ```bash
-# Ejecutar la suite completa de 172 pruebas de Node.js
+# Ejecutar la suite completa de 173 pruebas de Node.js
 npm test
 
 # Ejecutar las pruebas del paquete de integración de Laravel (PHP 8.2+)

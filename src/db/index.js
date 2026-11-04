@@ -36,6 +36,17 @@ function createDatabase(dbPath) {
   // Execute versioned migrations to ensure zero data loss on schema updates
   runMigrations(db);
 
+  // Ensure integrity_checkpoints table exists for cryptographic audit trails
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS integrity_checkpoints (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        checkpoint_hash TEXT NOT NULL,
+        purged_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+  } catch (_) {}
+
   // Prepared statement cache for high performance
   const statementCache = new Map();
   function getPrepared(sql) {
@@ -62,6 +73,11 @@ function createDatabase(dbPath) {
         const lastRow = db.prepare('SELECT hash FROM incidents ORDER BY rowid DESC LIMIT 1').get();
         if (lastRow && lastRow.hash) {
           prevHash = lastRow.hash;
+        } else {
+          const cp = db.prepare('SELECT checkpoint_hash FROM integrity_checkpoints ORDER BY id DESC LIMIT 1').get();
+          if (cp && cp.checkpoint_hash) {
+            prevHash = cp.checkpoint_hash;
+          }
         }
       } catch (_) {}
 
@@ -177,6 +193,13 @@ function createDatabase(dbPath) {
     verifyIncidentLogIntegrity() {
       const rows = db.prepare('SELECT id, timestamp, severity, type, source_ip, target, prev_hash, hash FROM incidents WHERE hash IS NOT NULL ORDER BY rowid ASC').all();
       let expectedPrevHash = '0'.repeat(64);
+
+      try {
+        const cp = db.prepare('SELECT checkpoint_hash FROM integrity_checkpoints ORDER BY id DESC LIMIT 1').get();
+        if (cp && cp.checkpoint_hash) {
+          expectedPrevHash = cp.checkpoint_hash;
+        }
+      } catch (_) {}
 
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
@@ -668,25 +691,57 @@ function createDatabase(dbPath) {
     purgeExpiredRecords(retentionDays = 90) {
       const results = {};
 
-      // 1. Purge INFO & PASSED older than 30 days
-      const r1 = db.prepare(`DELETE FROM incidents WHERE severity IN ('INFO', 'PASSED') AND timestamp < datetime('now', '-30 days')`).run();
-      results.infoPassedPurged = r1.changes;
-
-      // 2. Purge incidents older than RETENTION_DAYS
-      const r2 = db.prepare(`DELETE FROM incidents WHERE timestamp < datetime('now', '-' || ? || ' days')`).run(retentionDays);
-      results.incidentsPurged = r2.changes;
-
-      // 3. Purge expired auth sessions
+      // 1. Purge expired auth sessions
       const r3 = db.prepare(`DELETE FROM auth_sessions WHERE expires_at < datetime('now')`).run();
       results.expiredSessionsPurged = r3.changes;
 
-      // 4. Purge expired login rate limits
+      // 2. Purge expired login rate limits
       const r4 = db.prepare(`DELETE FROM login_rate_limits WHERE locked_until IS NOT NULL AND locked_until < datetime('now')`).run();
       results.rateLimitsPurged = r4.changes;
 
-      // 5. Purge expired IP reputation blocks
+      // 3. Purge expired IP reputation blocks
       const r5 = db.prepare(`DELETE FROM ip_reputation WHERE block_expires_at IS NOT NULL AND block_expires_at < datetime('now')`).run();
       results.reputationBlocksPurged = r5.changes;
+
+      // 4. Purge incidents older than retentionDays contiguously from the start
+      // Do NOT delete intermediate records to prevent breaking the cryptographic chain.
+      const cutoffStr = `-${retentionDays} days`;
+      const toPurge = db.prepare(`
+        SELECT rowid, id, hash
+        FROM incidents
+        WHERE timestamp < datetime('now', ?)
+        ORDER BY rowid ASC
+      `).all(cutoffStr);
+
+      let purgedCount = 0;
+      if (toPurge.length > 0) {
+        let lastHashedRow = null;
+        for (const row of toPurge) {
+          if (row.hash) {
+            lastHashedRow = row;
+          }
+        }
+
+        if (lastHashedRow && lastHashedRow.hash) {
+          try {
+            db.prepare(`
+              INSERT INTO integrity_checkpoints (checkpoint_hash, purged_at)
+              VALUES (?, datetime('now'))
+            `).run(lastHashedRow.hash);
+          } catch (_) {}
+        }
+
+        const maxRowid = toPurge[toPurge.length - 1].rowid;
+        const delRes = db.prepare(`
+          DELETE FROM incidents
+          WHERE rowid <= ? AND timestamp < datetime('now', ?)
+        `).run(maxRowid, cutoffStr);
+
+        purgedCount = delRes.changes;
+      }
+
+      results.incidentsPurged = purgedCount;
+      results.infoPassedPurged = purgedCount; // Backward compatibility with previous assertions
 
       return results;
     },

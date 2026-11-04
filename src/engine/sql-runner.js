@@ -12,7 +12,7 @@ const FORBIDDEN_SQL_KEYWORDS = [
 ];
 
 const SENSITIVE_TABLES = [
-  'users', 'auth_sessions', 'api_keys', 'admin_audit_log', 'login_rate_limits'
+  'users', 'auth_sessions', 'api_keys', 'admin_audit_log', 'login_rate_limits', 'integrity_checkpoints'
 ];
 
 function sanitizeAndValidateQuery(rawQuery) {

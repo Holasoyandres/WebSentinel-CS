@@ -289,10 +289,10 @@ describe('WebSentinel-CS :: FASE 2 - Integridad Forense, Fiabilidad y Operación
         VALUES ('ip:198.51.100.99', 5, datetime('now', '-10 minutes'), datetime('now', '-20 minutes'))
       `).run();
 
-      // 3. Insert an old INFO incident (>30 days old)
+      // 3. Insert an old INFO incident (>90 days old)
       ctx.db.raw.prepare(`
         INSERT INTO incidents (id, timestamp, severity, type, rule_id, source_ip, target, action, details)
-        VALUES ('OLD-INFO-001', datetime('now', '-35 days'), 'INFO', 'CLEAN', 'R1', '127.0.0.1', '/', 'PASSED', 'Viejo info')
+        VALUES ('OLD-INFO-001', datetime('now', '-95 days'), 'INFO', 'CLEAN', 'R1', '127.0.0.1', '/', 'PASSED', 'Viejo info')
       `).run();
 
       // Run purge
@@ -304,6 +304,48 @@ describe('WebSentinel-CS :: FASE 2 - Integridad Forense, Fiabilidad y Operación
       // Verify expired session is gone
       const expiredSess = ctx.db.raw.prepare('SELECT * FROM auth_sessions WHERE token_hash = ?').get('expired-tok-hash');
       assert.equal(expiredSess, undefined);
+    });
+
+    test('purgeExpiredRecords preserves SHA-256 hash chain after purging oldest contiguous records', () => {
+      const testDb = createDatabase(':memory:');
+
+      // 1. Insert 5 chained incidents across timestamps
+      const timestamps = [
+        new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(), // 10 days ago (oldest)
+        new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),  // 8 days ago
+        new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(),  // 4 days ago
+        new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),  // 2 days ago
+        new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString()   // 1 day ago (newest)
+      ];
+
+      for (let i = 0; i < 5; i++) {
+        testDb.insertIncident({
+          id: `SEC-PURGE-TEST-00${i + 1}`,
+          timestamp: timestamps[i],
+          severity: 'HIGH',
+          type: 'SQLI',
+          ruleId: `SIG-SQLI-00${i + 1}`,
+          sourceIp: '198.51.100.42',
+          target: `/api/resource/${i + 1}`,
+          action: 'BLOCKED',
+          details: `Test incident ${i + 1} for purge chain verification`
+        });
+      }
+
+      // Verify chain is valid initially
+      const initialVerify = testDb.verifyIncidentLogIntegrity();
+      assert.equal(initialVerify.valid, true, 'Initial chain must be valid');
+
+      // 2. Purge records older than 6 days (this must purge exactly the 2 oldest: 10d and 8d ago)
+      const purgeRes = testDb.purgeExpiredRecords(6);
+      assert.equal(purgeRes.incidentsPurged, 2, 'Must purge exactly the 2 oldest incidents');
+
+      // 3. Verify that the SHA-256 hash chain remains VALID after the purge
+      const postPurgeVerify = testDb.verifyIncidentLogIntegrity();
+      assert.equal(postPurgeVerify.valid, true, 'Chain must remain valid after contiguous purge of oldest records');
+      assert.equal(postPurgeVerify.verifiedCount, 3, 'Must verify the 3 remaining incidents');
+
+      testDb.close();
     });
   });
 
