@@ -118,14 +118,29 @@ body.theme-enterprise {
 
 .app-logo {
   color: var(--color-info);
-  background: var(--color-info-bg);
-  border: 1px solid var(--color-info-border);
-  width: 36px;
-  height: 36px;
-  border-radius: 6px;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.16) 0%, rgba(15, 23, 42, 0.45) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  box-shadow: 0 0 12px rgba(2, 132, 199, 0.22);
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.app-logo:hover {
+  transform: scale(1.06);
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.45);
+}
+
+.app-logo-img {
+  width: 30px;
+  height: 30px;
+  display: block;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
 }
 
 .app-identity {
@@ -1291,6 +1306,12 @@ body.theme-light .timeline-step {
 
 body.theme-light .timeline-step:hover {
   background: #F8FAFC;
+}
+
+body.theme-light .app-logo {
+  background: radial-gradient(circle, rgba(2, 132, 199, 0.12) 0%, rgba(241, 245, 249, 0.8) 100%);
+  border-color: rgba(2, 132, 199, 0.3);
+  box-shadow: 0 1px 6px rgba(2, 132, 199, 0.15);
 }
 
 /* Table Clickable Rows */

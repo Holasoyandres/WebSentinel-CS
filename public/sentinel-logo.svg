@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="shieldBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284C7" />
+      <stop offset="50%" stop-color="#0369A1" />
+      <stop offset="100%" stop-color="#0F172A" />
+    </linearGradient>
+
+    <!-- Neon Circuit Core -->
+    <linearGradient id="neonCore" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+
+    <linearGradient id="eyeGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#00F0FF" />
+      <stop offset="100%" stop-color="#10B981" />
+    </linearGradient>
+
+    <!-- Drop Shadow Filter -->
+    <filter id="sentinelGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Outer Protective Halo -->
+  <circle cx="60" cy="60" r="56" fill="none" stroke="#38BDF8" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.4" />
+  
+  <!-- Outer Fortress Shield -->
+  <path d="M 60,10 
+           C 88,10 104,22 104,46 
+           C 104,78 78,102 60,112 
+           C 42,102 16,78 16,46 
+           C 16,22 32,10 60,10 Z" 
+        fill="url(#shieldBg)" 
+        stroke="#38BDF8" 
+        stroke-width="2.5" 
+        stroke-linejoin="round" />
+
+  <!-- Inner Defense Plate -->
+  <path d="M 60,20 
+           C 82,20 94,30 94,50 
+           C 94,74 74,94 60,102 
+           C 46,94 26,74 26,50 
+           C 26,30 38,20 60,20 Z" 
+        fill="#080C14" 
+        stroke="#1E293B" 
+        stroke-width="1.5" />
+
+  <!-- Neural Defense Nodes & Cyber Circuits -->
+  <g stroke="#38BDF8" stroke-width="1.5" stroke-linecap="round" opacity="0.85">
+    <!-- Top Sentinel Antennas -->
+    <line x1="60" y1="26" x2="60" y2="38" />
+    <circle cx="60" cy="26" r="2" fill="#38BDF8" />
+
+    <line x1="36" y1="36" x2="48" y2="44" />
+    <circle cx="36" cy="36" r="1.8" fill="#38BDF8" />
+
+    <line x1="84" y1="36" x2="72" y2="44" />
+    <circle cx="84" cy="36" r="1.8" fill="#38BDF8" />
+
+    <!-- Lateral Nodes -->
+    <line x1="32" y1="62" x2="42" y2="62" />
+    <circle cx="32" cy="62" r="1.8" fill="#38BDF8" />
+
+    <line x1="88" y1="62" x2="78" y2="62" />
+    <circle cx="88" cy="62" r="1.8" fill="#38BDF8" />
+
+    <!-- Lower Nexus Lines -->
+    <line x1="44" y1="84" x2="60" y2="76" />
+    <line x1="76" y1="84" x2="60" y2="76" />
+    <circle cx="44" cy="84" r="1.8" fill="#10B981" />
+    <circle cx="76" cy="84" r="1.8" fill="#10B981" />
+  </g>
+
+  <!-- Central All-Seeing Sentinel Core (Radar / Guardian Eye) -->
+  <g filter="url(#sentinelGlow)">
+    <!-- Core Hexagon Container -->
+    <polygon points="60,42 75,51 75,69 60,78 45,69 45,51" 
+             fill="#0B132B" 
+             stroke="url(#neonCore)" 
+             stroke-width="2" />
+
+    <!-- Inner Active Scanner Pupil -->
+    <circle cx="60" cy="60" r="9" fill="url(#eyeGlow)" />
+    <circle cx="60" cy="60" r="4.5" fill="#FFFFFF" opacity="0.9" />
+
+    <!-- Central Crosshair Target -->
+    <line x1="60" y1="46" x2="60" y2="49" stroke="#00F0FF" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="60" y1="71" x2="60" y2="74" stroke="#00F0FF" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="49" y1="60" x2="46" y2="60" stroke="#00F0FF" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="74" y1="60" x2="71" y2="60" stroke="#00F0FF" stroke-width="1.5" stroke-linecap="round" />
+  </g>
+
+  <!-- Sentinel Digital Horizon Radar Ring -->
+  <circle cx="60" cy="60" r="18" fill="none" stroke="#38BDF8" stroke-width="1" stroke-dasharray="3 3" opacity="0.6" />
+</svg>
