@@ -1,9 +1,11 @@
 /* WebSentinel-CS :: Enterprise Security Dashboard Theme */
 :root {
+  /* Dark Theme (Default) */
   --bg-app: #080C14;
   --bg-surface: #0E1422;
   --bg-panel: #131B2E;
   --bg-control: #0A0F1A;
+  --bg-hover: rgba(255, 255, 255, 0.04);
   --border-subtle: #1C273C;
   --border-strong: #2A3952;
   
@@ -11,6 +13,10 @@
   --text-secondary: #94A3B8;
   --text-muted: #64748B;
   
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.35);
+
   --color-critical: #EF4444;
   --color-critical-bg: rgba(239, 68, 68, 0.12);
   --color-critical-border: rgba(239, 68, 68, 0.35);
@@ -33,6 +39,45 @@
 
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', "Cascadia Code", Consolas, monospace;
+}
+
+/* Light Theme Variables */
+body.theme-light {
+  --bg-app: #F8FAFC;
+  --bg-surface: #FFFFFF;
+  --bg-panel: #FFFFFF;
+  --bg-control: #F1F5F9;
+  --bg-hover: rgba(0, 0, 0, 0.03);
+  --border-subtle: #E2E8F0;
+  --border-strong: #CBD5E1;
+
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-muted: #64748B;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+
+  --color-critical: #DC2626;
+  --color-critical-bg: #FEF2F2;
+  --color-critical-border: #FCA5A5;
+
+  --color-high: #EA580C;
+  --color-high-bg: #FFF7ED;
+  --color-high-border: #FDBA74;
+
+  --color-medium: #D97706;
+  --color-medium-bg: #FFFBEB;
+  --color-medium-border: #FCD34D;
+
+  --color-info: #0284C7;
+  --color-info-bg: #F0F9FF;
+  --color-info-border: #BAE6FD;
+
+  --color-success: #059669;
+  --color-success-bg: #ECFDF5;
+  --color-success-border: #A7F3D0;
 }
 
 * {
@@ -1076,6 +1121,176 @@ body.theme-enterprise {
 .btn-page:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Theme Toggle Button Specifics */
+.btn-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-control);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-theme-toggle:hover {
+  background: var(--bg-panel);
+  border-color: var(--color-info);
+  transform: translateY(-1px);
+}
+
+/* Light Mode Polish Refinements */
+body.theme-light {
+  background-color: var(--bg-app);
+}
+
+body.theme-light .panel-box {
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+body.theme-light .panel-heading {
+  background: #F8FAFC;
+  border-bottom-color: var(--border-subtle);
+}
+
+body.theme-light .app-header {
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04);
+}
+
+body.theme-light .view-navigation {
+  background: var(--bg-surface);
+}
+
+body.theme-light .metrics-ribbon {
+  background: var(--bg-surface);
+}
+
+body.theme-light .table-soc thead th {
+  background: #F8FAFC;
+  color: #64748B;
+  border-bottom-color: var(--border-strong);
+}
+
+body.theme-light .table-soc tbody tr:hover {
+  background-color: rgba(2, 132, 199, 0.05) !important;
+}
+
+body.theme-light .table-soc tbody tr:nth-child(even) {
+  background-color: rgba(241, 245, 249, 0.4);
+}
+
+body.theme-light .form-control {
+  background: #FFFFFF;
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+body.theme-light .form-control:focus {
+  border-color: var(--color-info);
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.15);
+}
+
+body.theme-light .clock-display {
+  background: #F1F5F9;
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+body.theme-light .btn-primary {
+  background: #0284C7;
+  color: #FFFFFF;
+  border-color: #0369A1;
+}
+
+body.theme-light .btn-primary:hover {
+  background: #0369A1;
+}
+
+body.theme-light .btn-secondary {
+  background: #F1F5F9;
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+body.theme-light .btn-secondary:hover {
+  background: #E2E8F0;
+}
+
+body.theme-light .btn-outline {
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+
+body.theme-light .btn-outline:hover {
+  background: #F1F5F9;
+  color: var(--text-primary);
+  border-color: var(--color-info);
+}
+
+body.theme-light .btn-ghost {
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+body.theme-light .btn-ghost:hover {
+  background: #F1F5F9;
+  color: var(--text-primary);
+}
+
+body.theme-light .btn-filter {
+  background: #F1F5F9;
+  border-color: var(--border-subtle);
+  color: var(--text-muted);
+}
+
+body.theme-light .btn-filter.active {
+  background: #0F172A;
+  color: #FFFFFF;
+  border-color: #0F172A;
+}
+
+body.theme-light .badge-action {
+  background: #F1F5F9;
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+}
+
+body.theme-light .modal-card {
+  background: #FFFFFF;
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-lg);
+}
+
+body.theme-light .modal-header {
+  background: #F8FAFC;
+  border-bottom-color: var(--border-subtle);
+}
+
+body.theme-light .modal-footer {
+  background: #F8FAFC;
+  border-top-color: var(--border-subtle);
+}
+
+body.theme-light .detail-val {
+  background: #F8FAFC;
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+body.theme-light .timeline-step {
+  background: #FFFFFF;
+  border-color: var(--border-subtle);
+}
+
+body.theme-light .timeline-step:hover {
+  background: #F8FAFC;
 }
 
 /* Table Clickable Rows */

@@ -15,6 +15,7 @@ let sseConnection = null;
 let sseReconnectTimer = null;
 let sseBackoffMs = 1000;
 let timezoneMode = 'local'; // 'local' | 'utc'
+let currentTheme = localStorage.getItem('websentinel_theme') || 'dark';
 
 // Pagination & Search State
 let currentPage = 1;
@@ -24,6 +25,7 @@ let dateFromFilter = '';
 let dateToFilter = '';
 
 document.addEventListener('DOMContentLoaded', async () => {
+  initTheme();
   initClock();
   setupGlobalListeners();
 
@@ -41,6 +43,38 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Sessions list periodic refresh (fallback)
   setInterval(fetchSessionsFeed, 10000);
 });
+
+// -----------------------------------------------------------------------------
+// Theme Management (Dark / Light)
+// -----------------------------------------------------------------------------
+function initTheme() {
+  applyTheme(currentTheme);
+}
+
+function applyTheme(theme) {
+  currentTheme = theme;
+  localStorage.setItem('websentinel_theme', theme);
+
+  const iconEl = document.getElementById('themeToggleIcon');
+  const textEl = document.getElementById('themeToggleText');
+
+  if (theme === 'light') {
+    document.body.classList.remove('theme-enterprise');
+    document.body.classList.add('theme-light');
+    if (iconEl) iconEl.textContent = '🌙';
+    if (textEl) textEl.textContent = 'Oscuro';
+  } else {
+    document.body.classList.remove('theme-light');
+    document.body.classList.add('theme-enterprise');
+    if (iconEl) iconEl.textContent = '☀️';
+    if (textEl) textEl.textContent = 'Claro';
+  }
+}
+
+function toggleTheme() {
+  const nextTheme = currentTheme === 'dark' ? 'light' : 'dark';
+  applyTheme(nextTheme);
+}
 
 // -----------------------------------------------------------------------------
 // Authentication, CSRF & RBAC Experience
@@ -586,6 +620,12 @@ function setupGlobalListeners() {
       btnTz.textContent = timezoneMode === 'local' ? 'Zona: Local' : 'Zona: UTC';
       renderSocTable();
     });
+  }
+
+  // Theme Switcher Toggle
+  const btnTheme = document.getElementById('btnThemeToggle');
+  if (btnTheme) {
+    btnTheme.addEventListener('click', toggleTheme);
   }
 
   // Live Search Input (Debounced)
